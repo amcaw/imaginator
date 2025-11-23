@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { onMount } from 'svelte';
+	import { base } from '$app/paths';
 	import { watermarks } from '$lib/watermarks';
 	import { cropRatios, getExportCrop } from '$lib/crops';
 
@@ -103,7 +104,7 @@
 				watermarkImg = img;
 				resolve();
 			};
-			img.src = `/${selectedWatermark}`;
+			img.src = `${base}/${selectedWatermark}`;
 		});
 	}
 
@@ -454,7 +455,7 @@
 									}
 								}}
 							>
-								<img src="/{watermark.file}" alt={watermark.name} />
+								<img src="{base}/{watermark.file}" alt={watermark.name} />
 								<span class="watermark-name">{watermark.name}</span>
 							</div>
 						{/each}
