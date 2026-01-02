@@ -16,6 +16,7 @@
 	let isDragging = $state(false);
 	let dragStartX = $state(0);
 	let dragStartY = $state(0);
+	let activePointerId = $state<number | null>(null);
 
 	// Track which crop overlays are visible - 16:9 selected by default
 	let visibleCrops = $state<Set<number>>(new Set([0]));
@@ -27,6 +28,113 @@
 	let isHoveringWatermark = $state(false);
 	let isDraggingFile = $state(false);
 
+	function getExportCropFrame(image: HTMLImageElement) {
+		const exportCrop = getExportCrop();
+		const cropAspectRatio = exportCrop.width / exportCrop.height;
+		const imageAspectRatio = image.width / image.height;
+
+		let cropWidth, cropHeight;
+		if (cropAspectRatio > imageAspectRatio) {
+			cropWidth = image.width;
+			cropHeight = image.width / cropAspectRatio;
+		} else {
+			cropHeight = image.height;
+			cropWidth = image.height * cropAspectRatio;
+		}
+
+		const cropX = (image.width - cropWidth) / 2;
+		const cropY = (image.height - cropHeight) / 2;
+
+		return { cropWidth, cropHeight, cropX, cropY };
+	}
+
+	function getWatermarkRect() {
+		if (!watermarkImg) return null;
+
+		const scaledWidth = watermarkImg.width * watermarkScale;
+		const scaledHeight = watermarkImg.height * watermarkScale;
+		const left = watermarkX - scaledWidth / 2;
+		const top = watermarkY - scaledHeight / 2;
+
+		return {
+			left,
+			top,
+			right: left + scaledWidth,
+			bottom: top + scaledHeight,
+			width: scaledWidth,
+			height: scaledHeight
+		};
+	}
+
+	function getPointerInImage(event: PointerEvent, allowOutside = false) {
+		if (!canvas) return null;
+
+		const rect = canvas.getBoundingClientRect();
+		if (!rect.width || !rect.height) return null;
+
+		const canvasAspect = canvas.width / canvas.height;
+		const rectAspect = rect.width / rect.height;
+
+		let renderWidth, renderHeight;
+		if (canvasAspect > rectAspect) {
+			renderWidth = rect.width;
+			renderHeight = rect.width / canvasAspect;
+		} else {
+			renderHeight = rect.height;
+			renderWidth = rect.height * canvasAspect;
+		}
+
+		const offsetX = (rect.width - renderWidth) / 2;
+		const offsetY = (rect.height - renderHeight) / 2;
+
+		let x = event.clientX - rect.left - offsetX;
+		let y = event.clientY - rect.top - offsetY;
+
+		if (!allowOutside && (x < 0 || y < 0 || x > renderWidth || y > renderHeight)) {
+			return null;
+		}
+
+		x = Math.max(0, Math.min(renderWidth, x));
+		y = Math.max(0, Math.min(renderHeight, y));
+
+		return {
+			x: x * (canvas.width / renderWidth),
+			y: y * (canvas.height / renderHeight)
+		};
+	}
+
+	function getDefaultWatermarkWidthPercent(fileName: string) {
+		if (fileName.includes('decrypte')) {
+			return 0.08;
+		}
+
+		return 0.20;
+	}
+
+	function getDefaultWatermarkX(
+		fileName: string,
+		imageWidth: number,
+		cropX: number,
+		cropWidth: number,
+		scaledWidth: number
+	) {
+		const paddingXPercent = 0.25;
+
+		if (fileName.includes('live_gauche')) {
+			return scaledWidth / 2;
+		}
+
+		if (fileName.includes('live_centre')) {
+			return imageWidth / 2;
+		}
+
+		if (fileName.includes('live_droite')) {
+			return imageWidth - scaledWidth / 2;
+		}
+
+		return cropX + cropWidth - cropWidth * paddingXPercent;
+	}
+
 	function loadImageFromFile(file: File) {
 		if (file && file.type.startsWith('image/')) {
 			const reader = new FileReader();
@@ -36,21 +144,7 @@
 					uploadedImage = img;
 
 					// Calculate 16:9 frame position
-					const exportCrop = getExportCrop();
-					const cropAspectRatio = exportCrop.width / exportCrop.height;
-					const imageAspectRatio = img.width / img.height;
-
-					let cropWidth, cropHeight;
-					if (cropAspectRatio > imageAspectRatio) {
-						cropWidth = img.width;
-						cropHeight = img.width / cropAspectRatio;
-					} else {
-						cropHeight = img.height;
-						cropWidth = img.height * cropAspectRatio;
-					}
-
-					const cropX = (img.width - cropWidth) / 2;
-					const cropY = (img.height - cropHeight) / 2;
+					const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(img);
 
 					// Position watermark in upper right corner of 16:9 frame
 					// Using percentages of crop dimensions for consistency
@@ -102,6 +196,32 @@
 			const img = new Image();
 			img.onload = () => {
 				watermarkImg = img;
+
+				if (uploadedImage) {
+					const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(uploadedImage);
+					const targetWatermarkWidthPercent = getDefaultWatermarkWidthPercent(selectedWatermark);
+					watermarkScale = (cropWidth * targetWatermarkWidthPercent) / img.width;
+
+					const scaledWidth = img.width * watermarkScale;
+					const scaledHeight = img.height * watermarkScale;
+					const halfWidth = scaledWidth / 2;
+					const halfHeight = scaledHeight / 2;
+
+					const paddingYPercent = 0.12;
+					const targetX = getDefaultWatermarkX(
+						selectedWatermark,
+						uploadedImage.width,
+						cropX,
+						cropWidth,
+						scaledWidth
+					);
+					const targetY = cropY + cropHeight * paddingYPercent;
+
+					watermarkX = Math.max(halfWidth, Math.min(uploadedImage.width - halfWidth, targetX));
+					watermarkY = Math.max(halfHeight, Math.min(uploadedImage.height - halfHeight, targetY));
+				}
+
+				drawCanvas();
 				resolve();
 			};
 			img.src = `${base}/${selectedWatermark}`;
@@ -117,17 +237,27 @@
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
 		ctx.drawImage(uploadedImage, 0, 0);
 
-		if (watermarkImg) {
-			const scaledWidth = watermarkImg.width * watermarkScale;
-			const scaledHeight = watermarkImg.height * watermarkScale;
-
+		const watermarkRect = getWatermarkRect();
+		if (watermarkImg && watermarkRect) {
 			ctx.drawImage(
 				watermarkImg,
-				watermarkX - scaledWidth / 2,
-				watermarkY - scaledHeight / 2,
-				scaledWidth,
-				scaledHeight
+				watermarkRect.left,
+				watermarkRect.top,
+				watermarkRect.width,
+				watermarkRect.height
 			);
+
+			// Debug: outline watermark hit area
+			ctx.save();
+			ctx.strokeStyle = 'red';
+			ctx.lineWidth = 2;
+			ctx.strokeRect(
+				watermarkRect.left,
+				watermarkRect.top,
+				watermarkRect.width,
+				watermarkRect.height
+			);
+			ctx.restore();
 		}
 
 		// Draw crop overlays
@@ -214,67 +344,46 @@
 		drawCanvas();
 	}
 
-	function isMouseOverWatermark(mouseX: number, mouseY: number): boolean {
-		if (!watermarkImg) return false;
+	function isPointOverWatermark(mouseX: number, mouseY: number): boolean {
+		const watermarkRect = getWatermarkRect();
+		if (!watermarkRect) return false;
 
-		const scaledWidth = watermarkImg.width * watermarkScale;
-		const scaledHeight = watermarkImg.height * watermarkScale;
-
-		const watermarkLeft = watermarkX - scaledWidth / 2;
-		const watermarkTop = watermarkY - scaledHeight / 2;
-		const watermarkRight = watermarkLeft + scaledWidth;
-		const watermarkBottom = watermarkTop + scaledHeight;
-
-		return mouseX >= watermarkLeft && mouseX <= watermarkRight &&
-		       mouseY >= watermarkTop && mouseY <= watermarkBottom;
+		return mouseX >= watermarkRect.left &&
+			mouseX <= watermarkRect.right &&
+			mouseY >= watermarkRect.top &&
+			mouseY <= watermarkRect.bottom;
 	}
 
-	function handleCanvasMouseMove(event: MouseEvent) {
+	function handlePointerDown(event: PointerEvent) {
 		if (!canvas || !uploadedImage) return;
 
-		const rect = canvas.getBoundingClientRect();
-		const scaleX = uploadedImage.width / rect.width;
-		const scaleY = uploadedImage.height / rect.height;
+		activePointerId = event.pointerId;
+		canvas.setPointerCapture(event.pointerId);
 
-		const mouseX = (event.clientX - rect.left) * scaleX;
-		const mouseY = (event.clientY - rect.top) * scaleY;
-
-		isHoveringWatermark = isMouseOverWatermark(mouseX, mouseY);
-	}
-
-	function handleMouseDown(event: MouseEvent) {
-		if (!canvas || !uploadedImage) return;
-
-		const rect = canvas.getBoundingClientRect();
-		const scaleX = uploadedImage.width / rect.width;
-		const scaleY = uploadedImage.height / rect.height;
-
-		const mouseX = (event.clientX - rect.left) * scaleX;
-		const mouseY = (event.clientY - rect.top) * scaleY;
+		const mouse = getPointerInImage(event);
+		if (!mouse) return;
 
 		isDragging = true;
-		isDraggingWatermark = isMouseOverWatermark(mouseX, mouseY);
+		isDraggingWatermark = isPointOverWatermark(mouse.x, mouse.y);
 
 		if (isDraggingWatermark) {
 			// Moving watermark
-			dragStartX = mouseX - watermarkX;
-			dragStartY = mouseY - watermarkY;
+			dragStartX = mouse.x - watermarkX;
+			dragStartY = mouse.y - watermarkY;
 		} else {
 			// Moving crop frame
-			dragStartX = mouseX - cropOffsetX;
-			dragStartY = mouseY - cropOffsetY;
+			dragStartX = mouse.x - cropOffsetX;
+			dragStartY = mouse.y - cropOffsetY;
 		}
 	}
 
-	function handleMouseMove(event: MouseEvent) {
-		if (!isDragging || !canvas || !uploadedImage) return;
+	function handlePointerMove(event: PointerEvent) {
+		if (!canvas || !uploadedImage) return;
+		if (activePointerId !== null && event.pointerId !== activePointerId) return;
 
-		const rect = canvas.getBoundingClientRect();
-		const scaleX = uploadedImage.width / rect.width;
-		const scaleY = uploadedImage.height / rect.height;
-
-		const mouseX = (event.clientX - rect.left) * scaleX;
-		const mouseY = (event.clientY - rect.top) * scaleY;
+		const mouse = getPointerInImage(event, isDragging);
+		isHoveringWatermark = mouse ? isPointOverWatermark(mouse.x, mouse.y) : false;
+		if (!isDragging || !mouse) return;
 
 		if (isDraggingWatermark) {
 			// Moving watermark with boundary constraints
@@ -285,8 +394,8 @@
 				const halfHeight = scaledHeight / 2;
 
 				// Calculate new position
-				const newX = mouseX - dragStartX;
-				const newY = mouseY - dragStartY;
+				const newX = mouse.x - dragStartX;
+				const newY = mouse.y - dragStartY;
 
 				// Clamp to image boundaries
 				watermarkX = Math.max(halfWidth, Math.min(uploadedImage.width - halfWidth, newX));
@@ -312,8 +421,8 @@
 			const maxOffsetY = (uploadedImage.height - cropHeight) / 2;
 
 			// Clamp offset to keep crop within image bounds
-			const newOffsetX = mouseX - dragStartX;
-			const newOffsetY = mouseY - dragStartY;
+			const newOffsetX = mouse.x - dragStartX;
+			const newOffsetY = mouse.y - dragStartY;
 
 			cropOffsetX = Math.max(-maxOffsetX, Math.min(maxOffsetX, newOffsetX));
 			cropOffsetY = Math.max(-maxOffsetY, Math.min(maxOffsetY, newOffsetY));
@@ -322,8 +431,13 @@
 		drawCanvas();
 	}
 
-	function handleMouseUp() {
+	function handlePointerUp(event: PointerEvent) {
+		if (!canvas) return;
+		if (activePointerId !== null && event.pointerId !== activePointerId) return;
+
 		isDragging = false;
+		activePointerId = null;
+		canvas.releasePointerCapture(event.pointerId);
 	}
 
 	function downloadImage() {
@@ -407,10 +521,6 @@
 		}
 	});
 
-	$effect(() => {
-		loadWatermark();
-	});
-
 	// Draw canvas whenever image or watermark changes
 	$effect(() => {
 		if (uploadedImage && watermarkImg && canvas && ctx) {
@@ -419,13 +529,7 @@
 	});
 
 	onMount(() => {
-		window.addEventListener('mousemove', handleMouseMove);
-		window.addEventListener('mouseup', handleMouseUp);
-
-		return () => {
-			window.removeEventListener('mousemove', handleMouseMove);
-			window.removeEventListener('mouseup', handleMouseUp);
-		};
+		loadWatermark();
 	});
 </script>
 
@@ -503,8 +607,11 @@
 		<div class="canvas-container">
 			<canvas
 				bind:this={canvas}
-				onmousedown={handleMouseDown}
-				onmousemove={handleCanvasMouseMove}
+				onpointerdown={handlePointerDown}
+				onpointermove={handlePointerMove}
+				onpointerup={handlePointerUp}
+				onpointercancel={handlePointerUp}
+				onpointerleave={handlePointerUp}
 				class:grab-cursor={isHoveringWatermark}
 				class:move-cursor={!isHoveringWatermark}
 			></canvas>
