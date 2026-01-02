@@ -247,17 +247,6 @@
 				watermarkRect.height
 			);
 
-			// Debug: outline watermark hit area
-			ctx.save();
-			ctx.strokeStyle = 'red';
-			ctx.lineWidth = 2;
-			ctx.strokeRect(
-				watermarkRect.left,
-				watermarkRect.top,
-				watermarkRect.width,
-				watermarkRect.height
-			);
-			ctx.restore();
 		}
 
 		// Draw crop overlays
