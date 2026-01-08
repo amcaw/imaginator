@@ -1,6 +1,7 @@
 export type ImageWatermark = {
 	name: string;
 	file: string;
+	opacity?: number;
 	type?: 'image';
 };
 
@@ -40,4 +41,7 @@ export const watermarks: Watermark[] = [
 	{ name: 'Live gauche', file: 'live_gauche.png' },
 	{ name: 'Live milieu', file: 'live_centre.png' },
 	{ name: 'Live droite', file: 'live_droite.png' },
+	{ name: 'Opinion bandeau', file: 'opinion_bandeau.png', opacity: 1 },
+	{ name: 'Parlons solutions clair', file: 'Parlons_solutions_clair.png' },
+	{ name: 'Parlons solutions sombre', file: 'Parlons_solutions_sombre.png' },
 ];

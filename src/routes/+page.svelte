@@ -113,6 +113,10 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 			return 0.45;
 		}
 
+		if (watermark.file.includes('opinion_bandeau')) {
+			return 1;
+		}
+
 		if (watermark.file.includes('decrypte')) {
 			return 0.08;
 		}
@@ -133,6 +137,10 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 			return cropX + cropWidth * 0.75;
 		}
 
+		if (watermark.file.includes('opinion_bandeau')) {
+			return imageWidth / 2;
+		}
+
 		if (watermark.file.includes('live_gauche')) {
 			return scaledWidth / 2;
 		}
@@ -148,6 +156,26 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 		return cropX + cropWidth - cropWidth * paddingXPercent;
 	}
 
+	function getDefaultWatermarkY(
+		watermark: Watermark,
+		cropY: number,
+		cropHeight: number,
+		imageHeight: number,
+		scaledHeight: number
+	) {
+		const topPaddingPercent = 0.12;
+
+		if (watermark.type !== 'text' && watermark.file.includes('opinion_bandeau')) {
+			return imageHeight - scaledHeight / 2;
+		}
+
+		return cropY + cropHeight * topPaddingPercent;
+	}
+
+	function isParlons(watermark: Watermark) {
+		return watermark.type !== 'text' && watermark.file.includes('Parlons_solutions');
+	}
+
 	function loadImageFromFile(file: File) {
 		if (file && file.type.startsWith('image/')) {
 			const reader = new FileReader();
@@ -159,18 +187,50 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 					// Calculate 16:9 frame position
 					const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(img);
 
-					// Position watermark in upper right corner of 16:9 frame
-					// Using percentages of crop dimensions for consistency
-					const paddingXPercent = 0.25; // 25% from right edge
-					const paddingYPercent = 0.12; // 12% from top edge
-					watermarkX = cropX + cropWidth - (cropWidth * paddingXPercent);
-					watermarkY = cropY + (cropHeight * paddingYPercent);
+					let scaledWidth = 0;
+					let scaledHeight = 0;
+					const isOpinion = selectedWatermark.type !== 'text' &&
+						selectedWatermark.file.includes('opinion_bandeau');
+					const isParlonsSolution = isParlons(selectedWatermark);
 
 					// Scale watermark relative to crop frame width for consistency
 					// This ensures watermark appears same size regardless of source image resolution
 					if (watermarkImg) {
-						const targetWatermarkWidthPercent = getDefaultWatermarkWidthPercent(selectedWatermark);
-						watermarkScale = (cropWidth * targetWatermarkWidthPercent) / watermarkImg.width;
+						if (isOpinion) {
+							watermarkScale = img.width / watermarkImg.width;
+						} else if (isParlonsSolution) {
+							const targetScale = 0.2;
+							watermarkScale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, targetScale));
+						} else {
+							const targetWatermarkWidthPercent = getDefaultWatermarkWidthPercent(selectedWatermark);
+							watermarkScale = (cropWidth * targetWatermarkWidthPercent) / watermarkImg.width;
+							watermarkScale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, watermarkScale));
+						}
+						scaledWidth = watermarkImg.width * watermarkScale;
+						scaledHeight = watermarkImg.height * watermarkScale;
+					}
+
+					const targetX = getDefaultWatermarkX(
+						selectedWatermark,
+						img.width,
+						cropX,
+						cropWidth,
+						scaledWidth
+					);
+					const targetY = getDefaultWatermarkY(
+						selectedWatermark,
+						cropY,
+						cropHeight,
+						img.height,
+						scaledHeight
+					);
+					const halfWidth = scaledWidth / 2;
+					const halfHeight = scaledHeight / 2;
+
+					watermarkX = Math.max(halfWidth, Math.min(img.width - halfWidth, targetX));
+					watermarkY = Math.max(halfHeight, Math.min(img.height - halfHeight, targetY));
+
+					if (watermarkImg) {
 						drawCanvas();
 					}
 				};
@@ -288,18 +348,32 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 		if (uploadedImage && watermarkImg) {
 			const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(uploadedImage);
 			// Apply a consistent default scale for all watermarks
-			const defaultScale =
-				watermark.type === 'text' ? TEXT_DEFAULT_WATERMARK_SCALE : IMAGE_DEFAULT_WATERMARK_SCALE;
-			watermarkScale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, defaultScale));
+			const isOpinion = watermark.type !== 'text' && watermark.file.includes('opinion_bandeau');
+			const isParlonsSolution = isParlons(watermark);
+			const defaultScale = isOpinion
+				? uploadedImage.width / watermarkImg.width
+				: isParlonsSolution
+					? 0.2
+				: watermark.type === 'text'
+					? TEXT_DEFAULT_WATERMARK_SCALE
+					: IMAGE_DEFAULT_WATERMARK_SCALE;
+			watermarkScale = isOpinion
+				? defaultScale
+				: Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, defaultScale));
 
 			const scaledWidth = watermarkImg.width * watermarkScale;
 			const scaledHeight = watermarkImg.height * watermarkScale;
 			const halfWidth = scaledWidth / 2;
 			const halfHeight = scaledHeight / 2;
 
-			const paddingYPercent = 0.12;
 			const targetX = getDefaultWatermarkX(watermark, uploadedImage.width, cropX, cropWidth, scaledWidth);
-			const targetY = cropY + cropHeight * paddingYPercent;
+			const targetY = getDefaultWatermarkY(
+				watermark,
+				cropY,
+				cropHeight,
+				uploadedImage.height,
+				scaledHeight
+			);
 
 			watermarkX = Math.max(halfWidth, Math.min(uploadedImage.width - halfWidth, targetX));
 			watermarkY = Math.max(halfHeight, Math.min(uploadedImage.height - halfHeight, targetY));
@@ -319,6 +393,9 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 
 		const watermarkRect = getWatermarkRect();
 		if (watermarkImg && watermarkRect) {
+			const watermarkOpacity = selectedWatermark.type === 'text' ? 1 : selectedWatermark.opacity ?? 1;
+			ctx.save();
+			ctx.globalAlpha = watermarkOpacity;
 			ctx.drawImage(
 				watermarkImg,
 				watermarkRect.left,
@@ -326,6 +403,7 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 				watermarkRect.width,
 				watermarkRect.height
 			);
+			ctx.restore();
 
 		}
 
@@ -559,6 +637,9 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 		const exportWatermarkHeight = watermarkImg.height * watermarkScale * scaleFactorY;
 
 		// Draw watermark
+		const exportWatermarkOpacity = selectedWatermark.type === 'text' ? 1 : selectedWatermark.opacity ?? 1;
+		exportCtx.save();
+		exportCtx.globalAlpha = exportWatermarkOpacity;
 		exportCtx.drawImage(
 			watermarkImg,
 			exportWatermarkX - exportWatermarkWidth / 2,
@@ -566,6 +647,7 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 			exportWatermarkWidth,
 			exportWatermarkHeight
 		);
+		exportCtx.restore();
 
 		// Export as JPEG
 		exportCanvas.toBlob(
@@ -649,8 +731,9 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 							<p class="eyebrow">Cadres</p>
 							<h3>Vérifiez vos formats</h3>
 							<p class="card-subtext small">
-								Pour vérifier que vos logos rentrent dans le cadrage imposé par Cryo. Les cadres n'apparaitront
-								pas sur l'image exportée.
+								Le cadre rouge 16:9 indique le cadrage final de l'image téléchargée. Les cadres 1:1 et 9:16 sont
+								juste là pour vérifier si vos logos entreront dans ces cadrages spécifiques imposés par Cryo.
+								Aucun cadre n'apparaitra sur l'image exportée
 							</p>
 						</div>
 					</div>
@@ -662,7 +745,10 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 									checked={visibleCrops.has(index)}
 									onchange={() => toggleCrop(index)}
 								/>
-								<span class="chip-label" style="border-color: {crop.color}; color: {crop.color}">
+								<span
+									class="chip-label"
+									style={`--chip-color: ${crop.color}; border-color: ${crop.color}; color: ${crop.color}`}
+								>
 									{crop.name}
 								</span>
 							</label>
@@ -674,7 +760,7 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 					<div class="card-header">
 						<div>
 							<p class="eyebrow">Taille</p>
-							<h3>Ajustez le filigrane</h3>
+							<h3>Augementez ou diminuez la taille du filigrane</h3>
 						</div>
 						<span class="hint">Glissez pour affiner</span>
 					</div>
@@ -699,9 +785,9 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 				<div class="canvas-bar">
 					<div>
 						<p class="eyebrow">Aperçu</p>
-						<h3>Glissez pour placer le filigrane</h3>
+						<h3></h3>
 					</div>
-					<div class="pill">Drag & Drop activé</div>
+					<div class="pill">Bougez le logo avec votre souris. Si le logo n'est pas dans le cadre rouge, il sera coupé</div>
 				</div>
 				<canvas
 					bind:this={canvas}
@@ -992,20 +1078,21 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 		height: 16px;
 	}
 
-	.chip-label {
-		font-weight: 700;
-		padding: 0.25rem 0.6rem;
-		border-radius: 999px;
-		border: 2px solid;
+		.chip-label {
+			font-weight: 700;
+			padding: 0.25rem 0.6rem;
+			border-radius: 999px;
+			border: 2px solid;
 		background: white;
 		transition: all 0.2s ease;
 		font-size: 0.78rem;
-	}
+		}
 
-	.crop-chip input[type="checkbox"]:checked + .chip-label {
-		background: currentColor;
-		color: white !important;
-	}
+		.crop-chip input[type="checkbox"]:checked + .chip-label {
+			background: white;
+			color: var(--chip-color) !important;
+			border-color: var(--chip-color);
+		}
 
 	.slider-row {
 		display: flex;
