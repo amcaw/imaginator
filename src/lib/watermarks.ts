@@ -5,6 +5,11 @@ export type ImageWatermark = {
 	type?: 'image';
 };
 
+export type NoneWatermark = {
+	name: string;
+	type: 'none';
+};
+
 export type TextWatermark = {
 	name: string;
 	text: string;
@@ -19,9 +24,10 @@ export type TextWatermark = {
 	padding?: number;
 };
 
-export type Watermark = ImageWatermark | TextWatermark;
+export type Watermark = ImageWatermark | TextWatermark | NoneWatermark;
 
 export const watermarks: Watermark[] = [
+	{ name: 'Aucun filigrane', type: 'none' },
 	{
 		name: 'Généré par IA',
 		text: 'IMAGE GÉNÉRÉE PAR IA',
@@ -42,6 +48,7 @@ export const watermarks: Watermark[] = [
 	{ name: 'Live milieu', file: 'live_centre.png' },
 	{ name: 'Live droite', file: 'live_droite.png' },
 	{ name: 'Opinion bandeau', file: 'opinion_bandeau.png', opacity: 1 },
+	{ name: 'Enquête', file: 'enquete.png', opacity: 1 },
 	{ name: 'Parlons solutions clair', file: 'Parlons_solutions_clair.png' },
 	{ name: 'Parlons solutions sombre', file: 'Parlons_solutions_sombre.png' },
 ];
