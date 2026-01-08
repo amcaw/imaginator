@@ -7,9 +7,9 @@ export interface CropRatio {
 }
 
 export const cropRatios: CropRatio[] = [
-	{ name: '1920 × 1080 (Export)', width: 1920, height: 1080, color: '#ff0000', isExportCrop: true },
-	{ name: '400 × 400 (Guide)', width: 400, height: 400, color: '#00ff00' },
-	{ name: '400 × 620 (Guide)', width: 400, height: 620, color: '#0000ff' }
+	{ name: '16:9', width: 1920, height: 1080, color: '#ff6b6b', isExportCrop: true },
+	{ name: '1:1', width: 1080, height: 1080, color: '#38b2ac' },
+	{ name: '9:16', width: 1080, height: 1920, color: '#f6ad55' }
 ];
 
 // Helper to get the export crop

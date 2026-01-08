@@ -1,18 +1,23 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import { base } from '$app/paths';
-	import { watermarks } from '$lib/watermarks';
-	import { cropRatios, getExportCrop } from '$lib/crops';
+import { onMount } from 'svelte';
+import { base } from '$app/paths';
+import { watermarks, type Watermark, type TextWatermark } from '$lib/watermarks';
+import { cropRatios, getExportCrop } from '$lib/crops';
 
-	let uploadedImage = $state<HTMLImageElement | null>(null);
-	let selectedWatermark = $state<string>(watermarks[0].file);
-	let watermarkImg = $state<HTMLImageElement | null>(null);
-	let canvas = $state<HTMLCanvasElement | null>(null);
-	let ctx = $state<CanvasRenderingContext2D | null>(null);
+const MIN_WATERMARK_SCALE = 0.1;
+const MAX_WATERMARK_SCALE = 2;
+const IMAGE_DEFAULT_WATERMARK_SCALE = 0.15;
+const TEXT_DEFAULT_WATERMARK_SCALE = 1;
 
-	let watermarkX = $state(50);
-	let watermarkY = $state(50);
-	let watermarkScale = $state(0.35);
+let uploadedImage = $state<HTMLImageElement | null>(null);
+let selectedWatermark = $state<Watermark>(watermarks[0]);
+let watermarkImg = $state<HTMLImageElement | null>(null);
+let canvas = $state<HTMLCanvasElement | null>(null);
+let ctx = $state<CanvasRenderingContext2D | null>(null);
+
+let watermarkX = $state(50);
+let watermarkY = $state(50);
+let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 	let isDragging = $state(false);
 	let dragStartX = $state(0);
 	let dragStartY = $state(0);
@@ -103,8 +108,12 @@
 		};
 	}
 
-	function getDefaultWatermarkWidthPercent(fileName: string) {
-		if (fileName.includes('decrypte')) {
+	function getDefaultWatermarkWidthPercent(watermark: Watermark) {
+		if (watermark.type === 'text') {
+			return 0.45;
+		}
+
+		if (watermark.file.includes('decrypte')) {
 			return 0.08;
 		}
 
@@ -112,7 +121,7 @@
 	}
 
 	function getDefaultWatermarkX(
-		fileName: string,
+		watermark: Watermark,
 		imageWidth: number,
 		cropX: number,
 		cropWidth: number,
@@ -120,15 +129,19 @@
 	) {
 		const paddingXPercent = 0.25;
 
-		if (fileName.includes('live_gauche')) {
+		if (watermark.type === 'text') {
+			return cropX + cropWidth * 0.75;
+		}
+
+		if (watermark.file.includes('live_gauche')) {
 			return scaledWidth / 2;
 		}
 
-		if (fileName.includes('live_centre')) {
+		if (watermark.file.includes('live_centre')) {
 			return imageWidth / 2;
 		}
 
-		if (fileName.includes('live_droite')) {
+		if (watermark.file.includes('live_droite')) {
 			return imageWidth - scaledWidth / 2;
 		}
 
@@ -156,7 +169,7 @@
 					// Scale watermark relative to crop frame width for consistency
 					// This ensures watermark appears same size regardless of source image resolution
 					if (watermarkImg) {
-						const targetWatermarkWidthPercent = 0.20; // Watermark should be 20% of frame width
+						const targetWatermarkWidthPercent = getDefaultWatermarkWidthPercent(selectedWatermark);
 						watermarkScale = (cropWidth * targetWatermarkWidthPercent) / watermarkImg.width;
 						drawCanvas();
 					}
@@ -191,41 +204,108 @@
 		if (file) loadImageFromFile(file);
 	}
 
-	function loadWatermark() {
-		return new Promise<void>((resolve) => {
+	function ensureWatermarkFont(watermark: TextWatermark) {
+		if (typeof document !== 'undefined' && document.fonts) {
+			const fontFamily = watermark.font ?? 'Montserrat';
+			const fontWeight = watermark.fontWeight ?? 700;
+			return document.fonts.load(`${fontWeight} 80px "${fontFamily}"`);
+		}
+		return Promise.resolve();
+	}
+
+	function createTextWatermarkImage(watermark: TextWatermark) {
+		return new Promise<HTMLImageElement>(async (resolve) => {
+			await ensureWatermarkFont(watermark);
+
+			const canvasElement = document.createElement('canvas');
+			const canvasCtx = canvasElement.getContext('2d');
+			if (!canvasCtx) {
+				resolve(new Image());
+				return;
+			}
+
+			const fontFamily = watermark.font ?? 'Montserrat';
+			const fontWeight = watermark.fontWeight ?? 700;
+			const fontSize = 96;
+			const padding = watermark.padding ?? 20;
+
+			canvasCtx.font = `${fontWeight} ${fontSize}px "${fontFamily}"`;
+			canvasCtx.textBaseline = 'top';
+
+			const metrics = canvasCtx.measureText(watermark.text);
+			const textHeight =
+				(metrics.actualBoundingBoxAscent || fontSize) + (metrics.actualBoundingBoxDescent || fontSize * 0.2);
+
+			canvasElement.width = Math.ceil(metrics.width + padding * 2);
+			canvasElement.height = Math.ceil(textHeight + padding * 2);
+
+			canvasCtx.font = `${fontWeight} ${fontSize}px "${fontFamily}"`;
+			canvasCtx.textBaseline = 'top';
+			canvasCtx.fillStyle = watermark.color ?? 'white';
+
+			if (watermark.shadowColor) {
+				canvasCtx.shadowColor = watermark.shadowColor;
+				canvasCtx.shadowBlur = watermark.shadowBlur ?? 0;
+				canvasCtx.shadowOffsetX = 0;
+				canvasCtx.shadowOffsetY = 0;
+			}
+
+			const textX = padding;
+			const textY = padding;
+
+			if (watermark.outlineWidth && watermark.outlineColor) {
+				canvasCtx.lineWidth = watermark.outlineWidth;
+				canvasCtx.strokeStyle = watermark.outlineColor;
+				canvasCtx.strokeText(watermark.text, textX, textY);
+			}
+
+			canvasCtx.fillText(watermark.text, textX, textY);
+
 			const img = new Image();
-			img.onload = () => {
-				watermarkImg = img;
-
-				if (uploadedImage) {
-					const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(uploadedImage);
-					const targetWatermarkWidthPercent = getDefaultWatermarkWidthPercent(selectedWatermark);
-					watermarkScale = (cropWidth * targetWatermarkWidthPercent) / img.width;
-
-					const scaledWidth = img.width * watermarkScale;
-					const scaledHeight = img.height * watermarkScale;
-					const halfWidth = scaledWidth / 2;
-					const halfHeight = scaledHeight / 2;
-
-					const paddingYPercent = 0.12;
-					const targetX = getDefaultWatermarkX(
-						selectedWatermark,
-						uploadedImage.width,
-						cropX,
-						cropWidth,
-						scaledWidth
-					);
-					const targetY = cropY + cropHeight * paddingYPercent;
-
-					watermarkX = Math.max(halfWidth, Math.min(uploadedImage.width - halfWidth, targetX));
-					watermarkY = Math.max(halfHeight, Math.min(uploadedImage.height - halfHeight, targetY));
-				}
-
-				drawCanvas();
-				resolve();
-			};
-			img.src = `${base}/${selectedWatermark}`;
+			img.onload = () => resolve(img);
+			img.src = canvasElement.toDataURL('image/png');
 		});
+	}
+
+	async function loadWatermark() {
+		const watermark = selectedWatermark;
+		if (!watermark) return;
+
+		if (watermark.type === 'text') {
+			const img = await createTextWatermarkImage(watermark);
+			watermarkImg = img;
+		} else {
+			await new Promise<void>((resolve) => {
+				const img = new Image();
+				img.onload = () => {
+					watermarkImg = img;
+					resolve();
+				};
+				img.src = `${base}/${watermark.file}`;
+			});
+		}
+
+		if (uploadedImage && watermarkImg) {
+			const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(uploadedImage);
+			// Apply a consistent default scale for all watermarks
+			const defaultScale =
+				watermark.type === 'text' ? TEXT_DEFAULT_WATERMARK_SCALE : IMAGE_DEFAULT_WATERMARK_SCALE;
+			watermarkScale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, defaultScale));
+
+			const scaledWidth = watermarkImg.width * watermarkScale;
+			const scaledHeight = watermarkImg.height * watermarkScale;
+			const halfWidth = scaledWidth / 2;
+			const halfHeight = scaledHeight / 2;
+
+			const paddingYPercent = 0.12;
+			const targetX = getDefaultWatermarkX(watermark, uploadedImage.width, cropX, cropWidth, scaledWidth);
+			const targetY = cropY + cropHeight * paddingYPercent;
+
+			watermarkX = Math.max(halfWidth, Math.min(uploadedImage.width - halfWidth, targetX));
+			watermarkY = Math.max(halfHeight, Math.min(uploadedImage.height - halfHeight, targetY));
+		}
+
+		drawCanvas();
 	}
 
 	function drawCanvas() {
@@ -526,46 +606,63 @@
 	<h1>Ajoutez un filigrane à vos images</h1>
 
 	{#if uploadedImage}
-		<div class="controls">
-			<div class="controls-grid">
-				<div class="watermark-selection">
-					<label>Filigrane :</label>
-					<div class="watermark-options">
+		<div class="workspace">
+			<div class="side-panel">
+				<div class="card watermark-card">
+					<div class="card-header">
+						<div>
+							<p class="eyebrow">Filigrane</p>
+							<h3>Choisissez un style</h3>
+						</div>
+						<span class="hint">Cliquez pour appliquer</span>
+					</div>
+					<div class="watermark-grid">
 						{#each watermarks as watermark}
-							<div
+							<button
 								class="watermark-preview"
-								class:active={selectedWatermark === watermark.file}
+								class:active={selectedWatermark === watermark}
 								onclick={() => {
-									selectedWatermark = watermark.file;
+									selectedWatermark = watermark;
 									loadWatermark();
 								}}
-								role="button"
-								tabindex="0"
 								onkeypress={(e) => {
 									if (e.key === 'Enter' || e.key === ' ') {
-										selectedWatermark = watermark.file;
+										selectedWatermark = watermark;
 										loadWatermark();
 									}
 								}}
 							>
-								<img src="{base}/{watermark.file}" alt={watermark.name} />
+								{#if watermark.type === 'text'}
+									<span class="watermark-text-preview">{watermark.text}</span>
+								{:else}
+									<img src="{base}/{watermark.file}" alt={watermark.name} />
+								{/if}
 								<span class="watermark-name">{watermark.name}</span>
-							</div>
+							</button>
 						{/each}
 					</div>
 				</div>
 
-				<div class="crop-selection">
-					<label>Cadres :</label>
+				<div class="card">
+					<div class="card-header">
+						<div>
+							<p class="eyebrow">Cadres</p>
+							<h3>Vérifiez vos formats</h3>
+							<p class="card-subtext small">
+								Pour vérifier que vos logos rentrent dans le cadrage imposé par Cryo. Les cadres n'apparaitront
+								pas sur l'image exportée.
+							</p>
+						</div>
+					</div>
 					<div class="crop-options">
 						{#each cropRatios as crop, index}
-							<label class="crop-checkbox">
+							<label class="crop-chip">
 								<input
 									type="checkbox"
 									checked={visibleCrops.has(index)}
 									onchange={() => toggleCrop(index)}
 								/>
-								<span class="crop-label" style="border-color: {crop.color}; color: {crop.color}">
+								<span class="chip-label" style="border-color: {crop.color}; color: {crop.color}">
 									{crop.name}
 								</span>
 							</label>
@@ -573,44 +670,49 @@
 					</div>
 				</div>
 
-				<div class="scale-control">
-					<label>Taille :</label>
-					<input
-						type="range"
-						min="0.1"
-						max="1"
-						step="0.05"
-						bind:value={watermarkScale}
-						oninput={() => drawCanvas()}
-					/>
+				<div class="card">
+					<div class="card-header">
+						<div>
+							<p class="eyebrow">Taille</p>
+							<h3>Ajustez le filigrane</h3>
+						</div>
+						<span class="hint">Glissez pour affiner</span>
+					</div>
+					<div class="slider-row">
+						<input
+							type="range"
+							min={MIN_WATERMARK_SCALE}
+							max={MAX_WATERMARK_SCALE}
+							step="0.05"
+							bind:value={watermarkScale}
+							oninput={() => drawCanvas()}
+						/>
+						<span class="slider-value">{watermarkScale.toFixed(2)}x</span>
+					</div>
 				</div>
 
 				<button class="download-btn" onclick={downloadImage}>
-					Télécharger
+					Télécharger l'image
 				</button>
 			</div>
-		</div>
-	{/if}
-
-	{#if uploadedImage}
-		<div class="canvas-container">
-			<canvas
-				bind:this={canvas}
-				onpointerdown={handlePointerDown}
-				onpointermove={handlePointerMove}
-				onpointerup={handlePointerUp}
-				onpointercancel={handlePointerUp}
-				onpointerleave={handlePointerUp}
-				class:grab-cursor={isHoveringWatermark}
-				class:move-cursor={!isHoveringWatermark}
-			></canvas>
-			<div class="instructions">
-				<p class="instruction" class:active={isHoveringWatermark}>
-					<span class="icon">✋</span> Sur le filigrane : glisser pour le déplacer
-				</p>
-				<p class="instruction" class:active={!isHoveringWatermark}>
-					<span class="icon">↔️</span> Ailleurs : glisser pour repositionner le cadre 16:9
-				</p>
+			<div class="canvas-container">
+				<div class="canvas-bar">
+					<div>
+						<p class="eyebrow">Aperçu</p>
+						<h3>Glissez pour placer le filigrane</h3>
+					</div>
+					<div class="pill">Drag & Drop activé</div>
+				</div>
+				<canvas
+					bind:this={canvas}
+					onpointerdown={handlePointerDown}
+					onpointermove={handlePointerMove}
+					onpointerup={handlePointerUp}
+					onpointercancel={handlePointerUp}
+					onpointerleave={handlePointerUp}
+					class:grab-cursor={isHoveringWatermark}
+					class:move-cursor={!isHoveringWatermark}
+				></canvas>
 			</div>
 		</div>
 	{:else}
@@ -620,6 +722,9 @@
 			ondragover={handleDragOver}
 			ondragleave={handleDragLeave}
 			ondrop={handleDrop}
+			role="button"
+			tabindex="0"
+			aria-label="Déposez ou choisissez un fichier"
 		>
 			<div class="drop-zone-content">
 				<div class="upload-icon">📁</div>
@@ -646,7 +751,7 @@
 		margin: 0;
 		padding: 0;
 		font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-		background: #f8f9fa;
+		background: linear-gradient(135deg, #f7f8fb 0%, #eef1f7 100%);
 		height: 100vh;
 		overflow: hidden;
 	}
@@ -662,207 +767,307 @@
 		box-sizing: border-box;
 	}
 
+	.workspace {
+		display: grid;
+		grid-template-columns: minmax(320px, 420px) 1fr;
+		gap: 1rem;
+		flex: 1;
+		min-height: 0;
+		align-items: stretch;
+	}
+
+	.side-panel {
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+		overflow-y: auto;
+		padding-right: 0.25rem;
+	}
+
 	h1 {
-		color: #2d3748;
+		color: #1f2937;
 		text-align: center;
-		font-size: 1.25rem;
+		font-size: 1.35rem;
 		margin: 0;
 		padding: 0.25rem 0;
 		flex-shrink: 0;
-		font-weight: 700;
+		font-weight: 800;
 	}
 
-	.controls {
+	.eyebrow {
+		text-transform: uppercase;
+		letter-spacing: 0.08em;
+		font-size: 0.7rem;
+		color: #94a3b8;
+		margin: 0 0 0.15rem;
+	}
+
+	.card {
 		background: white;
-		padding: 0.75rem;
-		border-radius: 8px;
+		border-radius: 12px;
+		padding: 0.9rem 1rem;
 		border: 1px solid #e2e8f0;
-		flex-shrink: 0;
-		box-sizing: border-box;
+		box-shadow: 0 6px 18px rgba(15, 23, 42, 0.05);
 	}
 
-	.controls-grid {
+	.watermark-card {
+		min-height: 0;
+		display: flex;
+		flex-direction: column;
+		max-height: 60vh;
+	}
+
+	.card-header {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		margin-bottom: 0.65rem;
+	}
+
+	.card h3 {
+		margin: 0;
+		font-size: 1.05rem;
+		color: #0f172a;
+	}
+
+	.card-subtext.small {
+		font-size: 0.75rem;
+		color: #4b5563;
+		margin-top: 0.25rem;
+	}
+
+	.hint {
+		color: #6b7280;
+		font-size: 0.8rem;
+	}
+
+	.watermark-grid {
 		display: grid;
-		grid-template-columns: auto auto 1fr auto;
-		gap: 1rem;
-		align-items: center;
+		grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+		gap: 0.65rem;
 	}
 
-	.watermark-selection {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
+	.watermark-card .watermark-grid {
+		flex: 1 1 auto;
+		min-height: 0;
+		overflow-y: auto;
+		padding-right: 0.25rem;
 	}
 
-	.watermark-selection label {
-		font-weight: 600;
-		color: #333;
-		font-size: 0.85rem;
-		white-space: nowrap;
+	.watermark-card .watermark-grid::-webkit-scrollbar {
+		width: 8px;
 	}
 
-	.watermark-options {
-		display: flex;
-		gap: 0.5rem;
+	.watermark-card .watermark-grid::-webkit-scrollbar-thumb {
+		background: #cbd5e1;
+		border-radius: 10px;
 	}
 
 	.watermark-preview {
 		display: flex;
 		flex-direction: column;
 		align-items: center;
-		gap: 0.2rem;
-		padding: 0.4rem;
-		border: 2px solid #e0e0e0;
-		background: white;
-		border-radius: 6px;
+		justify-content: center;
+		gap: 0.3rem;
+		padding: 0.55rem;
+		border: 3px solid #e5e7eb;
+		background: #f9fafb;
+		border-radius: 10px;
 		cursor: pointer;
 		transition: all 0.2s ease;
+		width: 100%;
+		box-sizing: border-box;
+		min-height: 110px;
+		position: relative;
 	}
 
 	.watermark-preview:hover {
-		border-color: #667eea;
-		background: #f9f9ff;
+		border-color: #6366f1;
+		background: #f5f5ff;
 		transform: translateY(-1px);
-		box-shadow: 0 2px 8px rgba(102, 126, 234, 0.2);
+		box-shadow: 0 3px 10px rgba(99, 102, 241, 0.15);
 	}
 
 	.watermark-preview.active {
-		border-color: #667eea;
-		background: #f0f2ff;
-		box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+		border-color: #ef4444;
+		background: #fef2f2;
+		box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.35), 0 6px 14px rgba(239, 68, 68, 0.25);
+		outline: 2px solid #ef4444;
+	}
+
+	.watermark-preview.active img,
+	.watermark-preview.active .watermark-text-preview {
+		border-color: #ef4444;
+	}
+
+	.watermark-preview.active:hover {
+		border-color: #ef4444;
+		background: #fee2e2;
+	}
+
+	.watermark-preview.active::after {
+		content: 'Sélectionné';
+		position: absolute;
+		top: 6px;
+		right: 8px;
+		background: #ef4444;
+		color: white;
+		border-radius: 999px;
+		padding: 0.15rem 0.55rem;
+		font-size: 0.65rem;
+		font-weight: 700;
 	}
 
 	.watermark-preview img {
-		width: 45px;
-		height: 45px;
+		width: auto;
+		max-width: 100%;
+		max-height: 80px;
 		object-fit: contain;
-		background: #f5f5f5;
-		padding: 0.2rem;
-		border-radius: 4px;
+		background: #fff;
+		padding: 0.35rem;
+		border-radius: 8px;
+		border: 1px solid #e5e7eb;
+		box-sizing: border-box;
+	}
+
+	.watermark-text-preview {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		width: auto;
+		max-width: 100%;
+		min-height: 80px;
+		padding: 0.4rem 0.6rem;
+		border-radius: 8px;
+		background: #0f172a;
+		color: #e2e8f0;
+		font-family: 'Montserrat', sans-serif;
+		font-weight: 800;
+		text-transform: uppercase;
+		font-size: 0.7rem;
+		text-align: center;
+		box-sizing: border-box;
+		border: 1px solid #1f2937;
 	}
 
 	.watermark-name {
-		font-size: 0.7rem;
-		font-weight: 600;
-		color: #666;
+		font-size: 0.78rem;
+		font-weight: 700;
+		color: #111827;
 		text-align: center;
 	}
 
 	.watermark-preview.active .watermark-name {
-		color: #667eea;
-	}
-
-	.crop-selection {
-		display: flex;
-		align-items: center;
-		gap: 0.5rem;
-	}
-
-	.crop-selection > label {
-		font-weight: 600;
-		color: #333;
-		font-size: 0.85rem;
-		white-space: nowrap;
+		color: #4f46e5;
 	}
 
 	.crop-options {
 		display: flex;
+		flex-wrap: nowrap;
 		gap: 0.5rem;
 	}
 
-	.crop-checkbox {
+	.crop-chip {
 		display: flex;
 		align-items: center;
-		gap: 0.35rem;
+		gap: 0.4rem;
 		cursor: pointer;
-		padding: 0.35rem 0.6rem;
-		border-radius: 6px;
-		background: white;
-		border: 2px solid #e0e0e0;
+		padding: 0.45rem 0.65rem;
+		border-radius: 999px;
+		border: 1px solid #e5e7eb;
+		background: #f9fafb;
 		transition: all 0.2s ease;
 	}
 
-	.crop-checkbox:hover {
-		background: #f9f9f9;
+	.crop-chip:hover {
+		background: #eef2ff;
+		border-color: #6366f1;
 	}
 
-	.crop-checkbox input[type="checkbox"] {
+	.crop-chip input[type="checkbox"] {
 		cursor: pointer;
 		width: 16px;
 		height: 16px;
 	}
 
-	.crop-label {
-		font-weight: 600;
-		padding: 0.2rem 0.5rem;
-		border-radius: 3px;
+	.chip-label {
+		font-weight: 700;
+		padding: 0.25rem 0.6rem;
+		border-radius: 999px;
 		border: 2px solid;
 		background: white;
 		transition: all 0.2s ease;
-		font-size: 0.75rem;
+		font-size: 0.78rem;
 	}
 
-	.crop-checkbox input[type="checkbox"]:checked + .crop-label {
+	.crop-chip input[type="checkbox"]:checked + .chip-label {
 		background: currentColor;
 		color: white !important;
 	}
 
-	.scale-control {
+	.slider-row {
 		display: flex;
 		align-items: center;
-		gap: 0.5rem;
+		gap: 0.75rem;
 	}
 
-	.scale-control label {
-		font-weight: 600;
-		color: #333;
-		font-size: 0.85rem;
-		white-space: nowrap;
-	}
-
-	.scale-control input[type="range"] {
-		width: 150px;
-		height: 6px;
-		border-radius: 3px;
-		background: #e0e0e0;
+	.slider-row input[type="range"] {
+		width: 100%;
+		height: 8px;
+		border-radius: 4px;
+		background: #e5e7eb;
 		outline: none;
 		cursor: pointer;
 	}
 
-	.scale-control input[type="range"]::-webkit-slider-thumb {
+	.slider-row input[type="range"]::-webkit-slider-thumb {
 		-webkit-appearance: none;
 		appearance: none;
-		width: 16px;
-		height: 16px;
+		width: 18px;
+		height: 18px;
 		border-radius: 50%;
-		background: #667eea;
+		background: #4f46e5;
 		cursor: pointer;
+		box-shadow: 0 3px 8px rgba(79, 70, 229, 0.35);
 	}
 
-	.scale-control input[type="range"]::-moz-range-thumb {
-		width: 16px;
-		height: 16px;
+	.slider-row input[type="range"]::-moz-range-thumb {
+		width: 18px;
+		height: 18px;
 		border-radius: 50%;
-		background: #667eea;
+		background: #4f46e5;
 		cursor: pointer;
 		border: none;
+		box-shadow: 0 3px 8px rgba(79, 70, 229, 0.35);
+	}
+
+	.slider-value {
+		font-weight: 700;
+		color: #111827;
+		min-width: 52px;
 	}
 
 	.download-btn {
-		padding: 0.5rem 1rem;
-		background: #2d3748;
+		padding: 0.75rem 1.1rem;
+		background: linear-gradient(135deg, #4f46e5, #6366f1);
 		color: white;
 		border: none;
-		border-radius: 6px;
+		border-radius: 10px;
 		cursor: pointer;
-		font-weight: 600;
-		font-size: 0.85rem;
+		font-weight: 700;
+		font-size: 0.95rem;
 		transition: all 0.2s ease;
 		white-space: nowrap;
+		box-shadow: 0 8px 18px rgba(99, 102, 241, 0.3);
+		width: 100%;
+		margin-top: auto;
 	}
 
 	.download-btn:hover {
-		background: #1a202c;
+		transform: translateY(-1px);
+		box-shadow: 0 10px 22px rgba(99, 102, 241, 0.35);
 	}
 
 	.canvas-container {
@@ -878,6 +1083,31 @@
 		gap: 0.35rem;
 		overflow: hidden;
 		box-sizing: border-box;
+	}
+
+	.canvas-bar {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 0.75rem;
+		padding: 0.35rem 0.5rem;
+		border-bottom: 1px solid #e5e7eb;
+	}
+
+	.canvas-bar h3 {
+		margin: 0;
+		font-size: 1rem;
+		color: #0f172a;
+	}
+
+	.pill {
+		background: #eef2ff;
+		color: #4f46e5;
+		border-radius: 999px;
+		padding: 0.35rem 0.65rem;
+		font-weight: 700;
+		font-size: 0.8rem;
+		border: 1px solid #e0e7ff;
 	}
 
 	canvas {
@@ -902,40 +1132,6 @@
 
 	canvas.move-cursor {
 		cursor: move;
-	}
-
-	.instructions {
-		display: flex;
-		flex-direction: column;
-		gap: 0.2rem;
-		padding: 0.35rem;
-		background: #f5f5f5;
-		border-radius: 6px;
-		flex-shrink: 0;
-	}
-
-	.instruction {
-		color: #999;
-		font-size: 0.75rem;
-		margin: 0;
-		padding: 0.25rem 0.4rem;
-		border-radius: 4px;
-		transition: all 0.3s ease;
-		display: flex;
-		align-items: center;
-		gap: 0.35rem;
-	}
-
-	.instruction.active {
-		color: #667eea;
-		background: white;
-		font-weight: 600;
-		transform: scale(1.02);
-		box-shadow: 0 2px 8px rgba(102, 126, 234, 0.2);
-	}
-
-	.instruction .icon {
-		font-size: 1.2rem;
 	}
 
 	.drop-zone {
