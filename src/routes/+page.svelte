@@ -1177,6 +1177,10 @@ function handleDrop(event: DragEvent) {
 							<strong>✅ Activer un logo</strong>
 							<p>Cliquez sur un logo ajouté (fond vert) dans la bibliothèque pour le sélectionner et le manipuler.</p>
 						</div>
+						<div class="help-item">
+							<strong>📁 Ajouter vos propres logos</strong>
+							<p>Cliquez sur la carte "Ajoutez votre logo en PNG" en bas de la liste pour importer vos propres logos au format PNG.</p>
+						</div>
 					</div>
 				{/if}
 				<div
@@ -1487,9 +1491,8 @@ function handleDrop(event: DragEvent) {
 	}
 
 	.watermark-preview img {
-		width: auto;
-		max-width: 100%;
-		max-height: 80px;
+		width: 100%;
+		height: 70px;
 		object-fit: contain;
 		background: #fff;
 		padding: 0.35rem;
@@ -1499,12 +1502,11 @@ function handleDrop(event: DragEvent) {
 	}
 
 	.watermark-text-preview {
-		display: inline-flex;
+		display: flex;
 		align-items: center;
 		justify-content: center;
-		width: auto;
-		max-width: 100%;
-		min-height: 80px;
+		width: 100%;
+		height: 70px;
 		padding: 0.4rem 0.6rem;
 		border-radius: 8px;
 		background: #0f172a;
