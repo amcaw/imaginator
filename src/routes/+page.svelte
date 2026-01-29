@@ -1,7 +1,7 @@
 <script lang="ts">
 import { onMount } from 'svelte';
 import { base } from '$app/paths';
-import { watermarks, type Watermark, type TextWatermark } from '$lib/watermarks';
+import { watermarks, type Watermark, type TextWatermark, type ImageWatermark } from '$lib/watermarks';
 import { cropRatios, getExportCrop } from '$lib/crops';
 
 const MIN_WATERMARK_SCALE = 0.1;
@@ -10,15 +10,21 @@ const IMAGE_DEFAULT_WATERMARK_SCALE = 0.15;
 const TEXT_DEFAULT_WATERMARK_SCALE = 1;
 const HANDLE_SIZE = 14;
 
+type WatermarkInstance = {
+	id: string;
+	watermark: Watermark;
+	img: HTMLImageElement | null;
+	x: number;
+	y: number;
+	scale: number;
+};
+
 let uploadedImage = $state<HTMLImageElement | null>(null);
 let selectedWatermark = $state<Watermark>(watermarks[0]);
-let watermarkImg = $state<HTMLImageElement | null>(null);
+let watermarkInstances = $state<WatermarkInstance[]>([]);
+let activeWatermarkId = $state<string | null>(null);
 let canvas = $state<HTMLCanvasElement | null>(null);
 let ctx = $state<CanvasRenderingContext2D | null>(null);
-
-let watermarkX = $state(50);
-let watermarkY = $state(50);
-let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 	let isDragging = $state(false);
 	let dragStartX = $state(0);
 	let dragStartY = $state(0);
@@ -41,6 +47,8 @@ let watermarkScale = $state(TEXT_DEFAULT_WATERMARK_SCALE);
 	let isDraggingWatermark = $state(false);
 	let isHoveringWatermark = $state(false);
 	let isDraggingFile = $state(false);
+	let isHelpExpanded = $state(false);
+	let customLogos = $state<WatermarkInstance[]>([]);
 
 type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se' | null;
 
@@ -64,13 +72,13 @@ type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se' | null;
 		return { cropWidth, cropHeight, cropX, cropY };
 	}
 
-	function getWatermarkRect() {
-		if (!watermarkImg) return null;
+	function getWatermarkRect(instance: WatermarkInstance) {
+		if (!instance.img) return null;
 
-		const scaledWidth = watermarkImg.width * watermarkScale;
-		const scaledHeight = watermarkImg.height * watermarkScale;
-		const left = watermarkX - scaledWidth / 2;
-		const top = watermarkY - scaledHeight / 2;
+		const scaledWidth = instance.img.width * instance.scale;
+		const scaledHeight = instance.img.height * instance.scale;
+		const left = instance.x - scaledWidth / 2;
+		const top = instance.y - scaledHeight / 2;
 
 		return {
 			left,
@@ -82,8 +90,15 @@ type ResizeHandle = 'nw' | 'ne' | 'sw' | 'se' | null;
 		};
 	}
 
+	function getActiveWatermark(): WatermarkInstance | null {
+		return watermarkInstances.find(w => w.id === activeWatermarkId) ?? null;
+	}
+
 	function getHandleAt(x: number, y: number): ResizeHandle {
-		const rect = getWatermarkRect();
+		const activeWatermark = getActiveWatermark();
+		if (!activeWatermark) return null;
+
+		const rect = getWatermarkRect(activeWatermark);
 		if (!rect) return null;
 
 		const handles = {
@@ -260,50 +275,10 @@ function isFullWidthBanner(watermark: Watermark) {
 				img.onload = () => {
 					uploadedImage = img;
 
-					// Calculate 16:9 frame position
-					const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(img);
-
-					let scaledWidth = 0;
-					let scaledHeight = 0;
-					const isBanner = isFullWidthBanner(selectedWatermark);
-					const isParlonsSolution = isParlons(selectedWatermark);
-
-					// Scale watermark relative to crop frame width for consistency
-					// This ensures watermark appears same size regardless of source image resolution
-					if (watermarkImg) {
-						if (isBanner) {
-							watermarkScale = img.width / watermarkImg.width;
-						} else if (isParlonsSolution) {
-							const targetScale = 0.2;
-							watermarkScale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, targetScale));
-						} else {
-							const targetWatermarkWidthPercent = getDefaultWatermarkWidthPercent(selectedWatermark);
-							watermarkScale = (cropWidth * targetWatermarkWidthPercent) / watermarkImg.width;
-							watermarkScale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, watermarkScale));
-						}
-						scaledWidth = watermarkImg.width * watermarkScale;
-						scaledHeight = watermarkImg.height * watermarkScale;
-					}
-
-					const targetX = getDefaultWatermarkX(
-						selectedWatermark,
-						img.width,
-						cropX,
-						cropWidth,
-						scaledWidth
-					);
-					const targetY = getDefaultWatermarkY(
-						selectedWatermark,
-						cropY,
-						cropHeight,
-						img.height,
-						scaledHeight
-					);
-					const halfWidth = scaledWidth / 2;
-					const halfHeight = scaledHeight / 2;
-
-					watermarkX = Math.max(halfWidth, Math.min(img.width - halfWidth, targetX));
-					watermarkY = Math.max(halfHeight, Math.min(img.height - halfHeight, targetY));
+					// Reposition all existing watermarks for the new image
+					watermarkInstances.forEach(instance => {
+						repositionWatermarkForImage(instance, img);
+					});
 
 					drawCanvas();
 				};
@@ -311,6 +286,49 @@ function isFullWidthBanner(watermark: Watermark) {
 			};
 			reader.readAsDataURL(file);
 		}
+	}
+
+	function repositionWatermarkForImage(instance: WatermarkInstance, img: HTMLImageElement) {
+		if (!instance.img) return;
+
+		const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(img);
+		const isBanner = isFullWidthBanner(instance.watermark);
+		const isParlonsSolution = isParlons(instance.watermark);
+
+		// Scale watermark relative to crop frame width for consistency
+		if (isBanner) {
+			instance.scale = img.width / instance.img.width;
+		} else if (isParlonsSolution) {
+			const targetScale = 0.2;
+			instance.scale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, targetScale));
+		} else {
+			const targetWatermarkWidthPercent = getDefaultWatermarkWidthPercent(instance.watermark);
+			instance.scale = (cropWidth * targetWatermarkWidthPercent) / instance.img.width;
+			instance.scale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, instance.scale));
+		}
+
+		const scaledWidth = instance.img.width * instance.scale;
+		const scaledHeight = instance.img.height * instance.scale;
+
+		const targetX = getDefaultWatermarkX(
+			instance.watermark,
+			img.width,
+			cropX,
+			cropWidth,
+			scaledWidth
+		);
+		const targetY = getDefaultWatermarkY(
+			instance.watermark,
+			cropY,
+			cropHeight,
+			img.height,
+			scaledHeight
+		);
+		const halfWidth = scaledWidth / 2;
+		const halfHeight = scaledHeight / 2;
+
+		instance.x = Math.max(halfWidth, Math.min(img.width - halfWidth, targetX));
+		instance.y = Math.max(halfHeight, Math.min(img.height - halfHeight, targetY));
 	}
 
 	function handleImageUpload(event: Event) {
@@ -400,62 +418,149 @@ function handleDrop(event: DragEvent) {
 		});
 	}
 
-	async function loadWatermark() {
-		const watermark = selectedWatermark;
-		if (!watermark) return;
+	function isSameWatermark(w1: Watermark, w2: Watermark): boolean {
+		if (w1.type !== w2.type) return false;
+		if (w1.type === 'text' && w2.type === 'text') {
+			return w1.text === w2.text;
+		}
+		if (isImageWatermark(w1) && isImageWatermark(w2)) {
+			return w1.file === w2.file;
+		}
+		return false;
+	}
 
-		if (watermark.type === 'none') {
-			watermarkImg = null;
-			drawCanvas();
+	async function handleCustomLogoUpload(event: Event) {
+		const input = event.target as HTMLInputElement;
+		const file = input.files?.[0];
+		if (!file || !file.type.startsWith('image/png')) {
+			alert('Veuillez sélectionner un fichier PNG');
 			return;
 		}
 
-		if (watermark.type === 'text') {
-			const img = await createTextWatermarkImage(watermark);
-			watermarkImg = img;
-		} else {
-			await new Promise<void>((resolve) => {
-				const img = new Image();
-				img.onload = () => {
-					watermarkImg = img;
-					resolve();
+		const reader = new FileReader();
+		reader.onload = async (e) => {
+			const img = new Image();
+			img.onload = () => {
+				// Create a custom watermark definition
+				const customWatermark: ImageWatermark = {
+					name: file.name.replace('.png', ''),
+					file: '', // Not used for custom logos
+					type: 'image',
+					opacity: 1
 				};
-				img.src = `${base}/${watermark.file}`;
-			});
-		}
 
-		if (uploadedImage && watermarkImg) {
-			const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(uploadedImage);
-			// Apply a consistent default scale for all watermarks
-			const isBanner = isFullWidthBanner(watermark);
-			const isParlonsSolution = isParlons(watermark);
-			const defaultScale = isBanner
-				? uploadedImage.width / watermarkImg.width
-				: isParlonsSolution
-					? 0.2
-				: watermark.type === 'text'
-					? TEXT_DEFAULT_WATERMARK_SCALE
-					: IMAGE_DEFAULT_WATERMARK_SCALE;
-			watermarkScale = isBanner
-				? defaultScale
-				: Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, defaultScale));
+				// Generate unique ID
+				const id = `custom-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-			const scaledWidth = watermarkImg.width * watermarkScale;
-			const scaledHeight = watermarkImg.height * watermarkScale;
-			const halfWidth = scaledWidth / 2;
-			const halfHeight = scaledHeight / 2;
+				// Calculate default position and scale
+				let x = 50, y = 50, scale = IMAGE_DEFAULT_WATERMARK_SCALE;
 
-			const targetX = getDefaultWatermarkX(watermark, uploadedImage.width, cropX, cropWidth, scaledWidth);
-			const targetY = getDefaultWatermarkY(
-				watermark,
-				cropY,
-				cropHeight,
-				uploadedImage.height,
-				scaledHeight
-			);
+				if (uploadedImage) {
+					const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(uploadedImage);
+					const defaultScale = IMAGE_DEFAULT_WATERMARK_SCALE;
+					scale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, defaultScale));
 
-			watermarkX = Math.max(halfWidth, Math.min(uploadedImage.width - halfWidth, targetX));
-			watermarkY = Math.max(halfHeight, Math.min(uploadedImage.height - halfHeight, targetY));
+					const scaledWidth = img.width * scale;
+					const scaledHeight = img.height * scale;
+					const halfWidth = scaledWidth / 2;
+					const halfHeight = scaledHeight / 2;
+
+					const targetX = getDefaultWatermarkX(customWatermark, uploadedImage.width, cropX, cropWidth, scaledWidth);
+					const targetY = getDefaultWatermarkY(
+						customWatermark,
+						cropY,
+						cropHeight,
+						uploadedImage.height,
+						scaledHeight
+					);
+
+					x = Math.max(halfWidth, Math.min(uploadedImage.width - halfWidth, targetX));
+					y = Math.max(halfHeight, Math.min(uploadedImage.height - halfHeight, targetY));
+				}
+
+				const newInstance: WatermarkInstance = { id, watermark: customWatermark, img, x, y, scale };
+				customLogos = [...customLogos, newInstance];
+				watermarkInstances = [...watermarkInstances, newInstance];
+				activeWatermarkId = id;
+
+				drawCanvas();
+			};
+			img.src = e.target?.result as string;
+		};
+		reader.readAsDataURL(file);
+
+		// Reset input so the same file can be uploaded again
+		input.value = '';
+	}
+
+	async function toggleWatermark(watermark: Watermark) {
+		if (watermark.type === 'none') return;
+
+		// Check if this watermark is already added
+		const existingIndex = watermarkInstances.findIndex(w => isSameWatermark(w.watermark, watermark));
+
+		if (existingIndex !== -1) {
+			// Remove it
+			const removed = watermarkInstances[existingIndex];
+			watermarkInstances = watermarkInstances.filter((_, i) => i !== existingIndex);
+			if (activeWatermarkId === removed.id) {
+				activeWatermarkId = watermarkInstances.length > 0 ? watermarkInstances[0].id : null;
+			}
+		} else {
+			// Add it
+			let img: HTMLImageElement;
+			if (watermark.type === 'text') {
+				img = await createTextWatermarkImage(watermark);
+			} else {
+				img = await new Promise<HTMLImageElement>((resolve) => {
+					const imgElement = new Image();
+					imgElement.onload = () => resolve(imgElement);
+					imgElement.src = `${base}/${watermark.file}`;
+				});
+			}
+
+			// Generate unique ID
+			const id = `watermark-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+
+			// Calculate default position and scale
+			let x = 50, y = 50, scale = IMAGE_DEFAULT_WATERMARK_SCALE;
+
+			if (uploadedImage) {
+				const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(uploadedImage);
+				const isBanner = isFullWidthBanner(watermark);
+				const isParlonsSolution = isParlons(watermark);
+				const defaultScale = isBanner
+					? uploadedImage.width / img.width
+					: isParlonsSolution
+						? 0.2
+					: watermark.type === 'text'
+						? TEXT_DEFAULT_WATERMARK_SCALE
+						: IMAGE_DEFAULT_WATERMARK_SCALE;
+				scale = isBanner
+					? defaultScale
+					: Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, defaultScale));
+
+				const scaledWidth = img.width * scale;
+				const scaledHeight = img.height * scale;
+				const halfWidth = scaledWidth / 2;
+				const halfHeight = scaledHeight / 2;
+
+				const targetX = getDefaultWatermarkX(watermark, uploadedImage.width, cropX, cropWidth, scaledWidth);
+				const targetY = getDefaultWatermarkY(
+					watermark,
+					cropY,
+					cropHeight,
+					uploadedImage.height,
+					scaledHeight
+				);
+
+				x = Math.max(halfWidth, Math.min(uploadedImage.width - halfWidth, targetX));
+				y = Math.max(halfHeight, Math.min(uploadedImage.height - halfHeight, targetY));
+			}
+
+			const newInstance: WatermarkInstance = { id, watermark, img, x, y, scale };
+			watermarkInstances = [...watermarkInstances, newInstance];
+			activeWatermarkId = id;
 		}
 
 		drawCanvas();
@@ -470,91 +575,100 @@ function handleDrop(event: DragEvent) {
 		ctx.clearRect(0, 0, canvas.width, canvas.height);
 		ctx.drawImage(uploadedImage, 0, 0);
 
-		const watermarkRect = getWatermarkRect();
-		if (watermarkImg && watermarkRect) {
-			const watermarkOpacity = selectedWatermark.type === 'text' ? 1 : selectedWatermark.opacity ?? 1;
+		// Draw all watermarks
+		watermarkInstances.forEach(instance => {
+			const watermarkRect = getWatermarkRect(instance);
+			if (!instance.img || !watermarkRect) return;
+
+			const watermarkOpacity = instance.watermark.type === 'text' ? 1 :
+				(isImageWatermark(instance.watermark) ? instance.watermark.opacity ?? 1 : 1);
 			ctx.save();
 			ctx.globalAlpha = watermarkOpacity;
 			ctx.drawImage(
-				watermarkImg,
+				instance.img,
 				watermarkRect.left,
 				watermarkRect.top,
 				watermarkRect.width,
 				watermarkRect.height
 			);
-
-			// Draw selection frame
-			ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
-			ctx.lineWidth = 2;
-			ctx.setLineDash([6, 4]);
-			ctx.strokeRect(watermarkRect.left, watermarkRect.top, watermarkRect.width, watermarkRect.height);
-			ctx.setLineDash([]);
-
-			// Draw handles
-			const handleHalf = HANDLE_SIZE / 2;
-			const handles = [
-				{ x: watermarkRect.left, y: watermarkRect.top },
-				{ x: watermarkRect.right, y: watermarkRect.top },
-				{ x: watermarkRect.left, y: watermarkRect.bottom },
-				{ x: watermarkRect.right, y: watermarkRect.bottom }
-			];
-			ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
-			ctx.strokeStyle = 'rgba(15, 23, 42, 0.4)';
-			handles.forEach(({ x, y }) => {
-				ctx.fillRect(x - handleHalf, y - handleHalf, HANDLE_SIZE, HANDLE_SIZE);
-				ctx.strokeRect(x - handleHalf, y - handleHalf, HANDLE_SIZE, HANDLE_SIZE);
-			});
-
-			// Draw move icon only on hover/drag
-			if (isHoveringWatermark || isDraggingWatermark || isResizingWatermark) {
-				const cx = watermarkRect.left + watermarkRect.width / 2;
-				const cy = watermarkRect.top + watermarkRect.height / 2;
-				const arm = 14;
-				const head = 5;
-
-				ctx.strokeStyle = 'rgba(15, 23, 42, 0.8)';
-				ctx.fillStyle = 'rgba(15, 23, 42, 0.8)';
-				ctx.lineWidth = 2;
-
-				ctx.beginPath();
-				ctx.moveTo(cx - arm, cy);
-				ctx.lineTo(cx + arm, cy);
-				ctx.moveTo(cx, cy - arm);
-				ctx.lineTo(cx, cy + arm);
-				ctx.stroke();
-
-				// Arrowheads
-				ctx.beginPath();
-				ctx.moveTo(cx - arm, cy);
-				ctx.lineTo(cx - arm + head, cy - head);
-				ctx.lineTo(cx - arm + head, cy + head);
-				ctx.closePath();
-				ctx.fill();
-
-				ctx.beginPath();
-				ctx.moveTo(cx + arm, cy);
-				ctx.lineTo(cx + arm - head, cy - head);
-				ctx.lineTo(cx + arm - head, cy + head);
-				ctx.closePath();
-				ctx.fill();
-
-				ctx.beginPath();
-				ctx.moveTo(cx, cy - arm);
-				ctx.lineTo(cx - head, cy - arm + head);
-				ctx.lineTo(cx + head, cy - arm + head);
-				ctx.closePath();
-				ctx.fill();
-
-				ctx.beginPath();
-				ctx.moveTo(cx, cy + arm);
-				ctx.lineTo(cx - head, cy + arm - head);
-				ctx.lineTo(cx + head, cy + arm - head);
-				ctx.closePath();
-				ctx.fill();
-			}
 			ctx.restore();
 
-		}
+			// Draw selection frame and handles only for active watermark
+			const isActive = instance.id === activeWatermarkId;
+			if (isActive) {
+				ctx.save();
+				// Draw selection frame
+				ctx.strokeStyle = 'rgba(255, 255, 255, 0.9)';
+				ctx.lineWidth = 2;
+				ctx.setLineDash([6, 4]);
+				ctx.strokeRect(watermarkRect.left, watermarkRect.top, watermarkRect.width, watermarkRect.height);
+				ctx.setLineDash([]);
+
+				// Draw handles
+				const handleHalf = HANDLE_SIZE / 2;
+				const handles = [
+					{ x: watermarkRect.left, y: watermarkRect.top },
+					{ x: watermarkRect.right, y: watermarkRect.top },
+					{ x: watermarkRect.left, y: watermarkRect.bottom },
+					{ x: watermarkRect.right, y: watermarkRect.bottom }
+				];
+				ctx.fillStyle = 'rgba(255, 255, 255, 0.95)';
+				ctx.strokeStyle = 'rgba(15, 23, 42, 0.4)';
+				handles.forEach(({ x, y }) => {
+					ctx.fillRect(x - handleHalf, y - handleHalf, HANDLE_SIZE, HANDLE_SIZE);
+					ctx.strokeRect(x - handleHalf, y - handleHalf, HANDLE_SIZE, HANDLE_SIZE);
+				});
+
+				// Draw move icon only on hover/drag
+				if (isHoveringWatermark || isDraggingWatermark || isResizingWatermark) {
+					const cx = watermarkRect.left + watermarkRect.width / 2;
+					const cy = watermarkRect.top + watermarkRect.height / 2;
+					const arm = 14;
+					const head = 5;
+
+					ctx.strokeStyle = 'rgba(15, 23, 42, 0.8)';
+					ctx.fillStyle = 'rgba(15, 23, 42, 0.8)';
+					ctx.lineWidth = 2;
+
+					ctx.beginPath();
+					ctx.moveTo(cx - arm, cy);
+					ctx.lineTo(cx + arm, cy);
+					ctx.moveTo(cx, cy - arm);
+					ctx.lineTo(cx, cy + arm);
+					ctx.stroke();
+
+					// Arrowheads
+					ctx.beginPath();
+					ctx.moveTo(cx - arm, cy);
+					ctx.lineTo(cx - arm + head, cy - head);
+					ctx.lineTo(cx - arm + head, cy + head);
+					ctx.closePath();
+					ctx.fill();
+
+					ctx.beginPath();
+					ctx.moveTo(cx + arm, cy);
+					ctx.lineTo(cx + arm - head, cy - head);
+					ctx.lineTo(cx + arm - head, cy + head);
+					ctx.closePath();
+					ctx.fill();
+
+					ctx.beginPath();
+					ctx.moveTo(cx, cy - arm);
+					ctx.lineTo(cx - head, cy - arm + head);
+					ctx.lineTo(cx + head, cy - arm + head);
+					ctx.closePath();
+					ctx.fill();
+
+					ctx.beginPath();
+					ctx.moveTo(cx, cy + arm);
+					ctx.lineTo(cx - head, cy + arm - head);
+					ctx.lineTo(cx + head, cy + arm - head);
+					ctx.closePath();
+					ctx.fill();
+				}
+				ctx.restore();
+			}
+		});
 
 		// Draw crop overlays
 		visibleCrops.forEach((cropIndex) => {
@@ -640,14 +754,19 @@ function handleDrop(event: DragEvent) {
 		drawCanvas();
 	}
 
-	function isPointOverWatermark(mouseX: number, mouseY: number): boolean {
-		const watermarkRect = getWatermarkRect();
-		if (!watermarkRect) return false;
+	function findWatermarkAtPoint(mouseX: number, mouseY: number): WatermarkInstance | null {
+		// Check watermarks in reverse order (top to bottom)
+		for (let i = watermarkInstances.length - 1; i >= 0; i--) {
+			const instance = watermarkInstances[i];
+			const rect = getWatermarkRect(instance);
+			if (!rect) continue;
 
-		return mouseX >= watermarkRect.left &&
-			mouseX <= watermarkRect.right &&
-			mouseY >= watermarkRect.top &&
-			mouseY <= watermarkRect.bottom;
+			if (mouseX >= rect.left && mouseX <= rect.right &&
+				mouseY >= rect.top && mouseY <= rect.bottom) {
+				return instance;
+			}
+		}
+		return null;
 	}
 
 	function handlePointerDown(event: PointerEvent) {
@@ -662,7 +781,10 @@ function handleDrop(event: DragEvent) {
 		isDragging = true;
 		const handle = getHandleAt(mouse.x, mouse.y);
 		if (handle) {
-			const rect = getWatermarkRect();
+			const activeWatermark = getActiveWatermark();
+			if (!activeWatermark) return;
+
+			const rect = getWatermarkRect(activeWatermark);
 			if (!rect) return;
 
 			isResizingWatermark = true;
@@ -694,12 +816,15 @@ function handleDrop(event: DragEvent) {
 			return;
 		}
 
-		isDraggingWatermark = isPointOverWatermark(mouse.x, mouse.y);
+		const clickedWatermark = findWatermarkAtPoint(mouse.x, mouse.y);
+		isDraggingWatermark = clickedWatermark !== null;
 
-		if (isDraggingWatermark) {
-			// Moving watermark
-			dragStartX = mouse.x - watermarkX;
-			dragStartY = mouse.y - watermarkY;
+		if (isDraggingWatermark && clickedWatermark) {
+			// Set as active and prepare to move
+			activeWatermarkId = clickedWatermark.id;
+			dragStartX = mouse.x - clickedWatermark.x;
+			dragStartY = mouse.y - clickedWatermark.y;
+			drawCanvas(); // Redraw to show new selection
 		} else {
 			// Moving crop frame
 			dragStartX = mouse.x - cropOffsetX;
@@ -714,20 +839,22 @@ function handleDrop(event: DragEvent) {
 		const mouse = getPointerInImage(event, isDragging);
 		const handle = mouse ? getHandleAt(mouse.x, mouse.y) : null;
 		hoveredHandle = handle;
-		isHoveringWatermark = mouse ? isPointOverWatermark(mouse.x, mouse.y) : false;
+		isHoveringWatermark = mouse ? findWatermarkAtPoint(mouse.x, mouse.y) !== null : false;
 		updateCanvasCursor();
 		if (!isDragging || !mouse) return;
 
-		if (isResizingWatermark && resizeHandle && watermarkImg) {
+		const activeWatermark = getActiveWatermark();
+
+		if (isResizingWatermark && resizeHandle && activeWatermark && activeWatermark.img) {
 			const anchorX = resizeAnchorX;
 			const anchorY = resizeAnchorY;
 			const rawWidth = Math.abs(mouse.x - anchorX);
 			const rawHeight = Math.abs(mouse.y - anchorY);
-			let scale = Math.min(rawWidth / watermarkImg.width, rawHeight / watermarkImg.height);
+			let scale = Math.min(rawWidth / activeWatermark.img.width, rawHeight / activeWatermark.img.height);
 			scale = Math.max(MIN_WATERMARK_SCALE, Math.min(MAX_WATERMARK_SCALE, scale));
 
-			const newWidth = watermarkImg.width * scale;
-			const newHeight = watermarkImg.height * scale;
+			const newWidth = activeWatermark.img.width * scale;
+			const newHeight = activeWatermark.img.height * scale;
 			let centerX = anchorX + resizeSignX * (newWidth / 2);
 			let centerY = anchorY + resizeSignY * (newHeight / 2);
 
@@ -736,25 +863,23 @@ function handleDrop(event: DragEvent) {
 			centerX = Math.max(halfWidth, Math.min(uploadedImage.width - halfWidth, centerX));
 			centerY = Math.max(halfHeight, Math.min(uploadedImage.height - halfHeight, centerY));
 
-			watermarkScale = scale;
-			watermarkX = centerX;
-			watermarkY = centerY;
-		} else if (isDraggingWatermark) {
+			activeWatermark.scale = scale;
+			activeWatermark.x = centerX;
+			activeWatermark.y = centerY;
+		} else if (isDraggingWatermark && activeWatermark && activeWatermark.img) {
 			// Moving watermark with boundary constraints
-			if (watermarkImg) {
-				const scaledWidth = watermarkImg.width * watermarkScale;
-				const scaledHeight = watermarkImg.height * watermarkScale;
-				const halfWidth = scaledWidth / 2;
-				const halfHeight = scaledHeight / 2;
+			const scaledWidth = activeWatermark.img.width * activeWatermark.scale;
+			const scaledHeight = activeWatermark.img.height * activeWatermark.scale;
+			const halfWidth = scaledWidth / 2;
+			const halfHeight = scaledHeight / 2;
 
-				// Calculate new position
-				const newX = mouse.x - dragStartX;
-				const newY = mouse.y - dragStartY;
+			// Calculate new position
+			const newX = mouse.x - dragStartX;
+			const newY = mouse.y - dragStartY;
 
-				// Clamp to image boundaries
-				watermarkX = Math.max(halfWidth, Math.min(uploadedImage.width - halfWidth, newX));
-				watermarkY = Math.max(halfHeight, Math.min(uploadedImage.height - halfHeight, newY));
-			}
+			// Clamp to image boundaries
+			activeWatermark.x = Math.max(halfWidth, Math.min(uploadedImage.width - halfWidth, newX));
+			activeWatermark.y = Math.max(halfHeight, Math.min(uploadedImage.height - halfHeight, newY));
 		} else {
 			// Moving crop frame with boundary constraints
 			const exportCrop = getExportCrop();
@@ -834,11 +959,13 @@ function handleDrop(event: DragEvent) {
 			0, 0, exportCrop.width, exportCrop.height  // Destination rectangle
 		);
 
-		// Draw watermark if present
-		if (watermarkImg && selectedWatermark.type !== 'none') {
+		// Draw all watermarks
+		watermarkInstances.forEach(instance => {
+			if (!instance.img || instance.watermark.type === 'none') return;
+
 			// Calculate watermark position relative to crop
-			const watermarkRelX = watermarkX - cropX;
-			const watermarkRelY = watermarkY - cropY;
+			const watermarkRelX = instance.x - cropX;
+			const watermarkRelY = instance.y - cropY;
 
 			// Scale watermark position to export dimensions
 			const scaleFactorX = exportCrop.width / cropWidth;
@@ -847,22 +974,23 @@ function handleDrop(event: DragEvent) {
 			const exportWatermarkY = watermarkRelY * scaleFactorY;
 
 			// Scale watermark size
-			const exportWatermarkWidth = watermarkImg.width * watermarkScale * scaleFactorX;
-			const exportWatermarkHeight = watermarkImg.height * watermarkScale * scaleFactorY;
+			const exportWatermarkWidth = instance.img.width * instance.scale * scaleFactorX;
+			const exportWatermarkHeight = instance.img.height * instance.scale * scaleFactorY;
 
 			// Draw watermark
-			const exportWatermarkOpacity = selectedWatermark.type === 'text' ? 1 : selectedWatermark.opacity ?? 1;
+			const exportWatermarkOpacity = instance.watermark.type === 'text' ? 1 :
+				(isImageWatermark(instance.watermark) ? instance.watermark.opacity ?? 1 : 1);
 			exportCtx.save();
 			exportCtx.globalAlpha = exportWatermarkOpacity;
 			exportCtx.drawImage(
-				watermarkImg,
+				instance.img,
 				exportWatermarkX - exportWatermarkWidth / 2,
 				exportWatermarkY - exportWatermarkHeight / 2,
 				exportWatermarkWidth,
 				exportWatermarkHeight
 			);
 			exportCtx.restore();
-		}
+		});
 
 		// Export as JPEG
 		exportCanvas.toBlob(
@@ -895,7 +1023,7 @@ function handleDrop(event: DragEvent) {
 	});
 
 	onMount(() => {
-		loadWatermark();
+		// Initialize with empty watermarks
 	});
 </script>
 
@@ -909,34 +1037,83 @@ function handleDrop(event: DragEvent) {
 					<div class="card-header">
 						<div>
 							<p class="eyebrow">Filigrane</p>
-							<h3>Choisissez un style</h3>
+							<h3>Ajoutez des logos</h3>
 						</div>
-						<span class="hint">Cliquez pour appliquer</span>
+						<span class="hint">Cliquez pour ajouter/retirer</span>
 					</div>
 					<div class="watermark-grid">
-						{#each watermarks as watermark}
-							<button
-								class="watermark-preview"
-								class:active={selectedWatermark === watermark}
-								onclick={() => {
-									selectedWatermark = watermark;
-									loadWatermark();
-								}}
-								onkeypress={(e) => {
-									if (e.key === 'Enter' || e.key === ' ') {
-										selectedWatermark = watermark;
-										loadWatermark();
-									}
-								}}
-							>
-								{#if watermark.type === 'text'}
-									<span class="watermark-text-preview">{watermark.text}</span>
-								{:else}
-									<img src="{base}/{watermark.file}" alt={watermark.name} />
-								{/if}
-								<span class="watermark-name">{watermark.name}</span>
-							</button>
+						{#each watermarks.filter(w => w.type !== 'none') as watermark}
+							{@const isAdded = watermarkInstances.some(i => isSameWatermark(i.watermark, watermark))}
+							<div class="watermark-preview-wrapper">
+								<div
+									class="watermark-preview"
+									class:added={isAdded}
+								>
+									{#if watermark.type === 'text'}
+										<span class="watermark-text-preview">{watermark.text}</span>
+									{:else if isImageWatermark(watermark)}
+										<img src="{base}/{watermark.file}" alt={watermark.name} />
+									{/if}
+									<span class="watermark-name">{watermark.name}</span>
+								</div>
+								<button
+									class="toggle-watermark-btn"
+									class:is-added={isAdded}
+									onclick={() => toggleWatermark(watermark)}
+									aria-label={isAdded ? `Retirer ${watermark.name}` : `Ajouter ${watermark.name}`}
+								>
+									{isAdded ? '×' : '+'}
+								</button>
+							</div>
 						{/each}
+
+						{#each customLogos as customInstance}
+							<div class="watermark-preview-wrapper">
+								<button
+									class="watermark-preview custom-logo"
+									class:active={customInstance.id === activeWatermarkId}
+									onclick={() => {
+										activeWatermarkId = customInstance.id;
+										drawCanvas();
+									}}
+								>
+									{#if customInstance.img}
+										<img src={customInstance.img.src} alt={customInstance.watermark.name} />
+									{/if}
+									<span class="watermark-name">{customInstance.watermark.name}</span>
+									{#if customInstance.id === activeWatermarkId}
+										<span class="active-badge">Actif</span>
+									{/if}
+								</button>
+								<button
+									class="toggle-watermark-btn is-added"
+									onclick={() => {
+										customLogos = customLogos.filter(c => c.id !== customInstance.id);
+										watermarkInstances = watermarkInstances.filter(w => w.id !== customInstance.id);
+										if (activeWatermarkId === customInstance.id) {
+											activeWatermarkId = watermarkInstances.length > 0 ? watermarkInstances[0].id : null;
+										}
+										drawCanvas();
+									}}
+									aria-label="Supprimer {customInstance.watermark.name}"
+								>
+									×
+								</button>
+							</div>
+						{/each}
+
+						<div class="watermark-preview-wrapper">
+							<label class="watermark-preview upload-card">
+								<div class="upload-icon-large">📁</div>
+								<span class="watermark-name upload-text">Ajoutez votre logo en PNG</span>
+								<input
+									type="file"
+									accept="image/png"
+									onchange={handleCustomLogoUpload}
+									style="display: none;"
+								/>
+							</label>
+						</div>
 					</div>
 				</div>
 
@@ -971,16 +1148,6 @@ function handleDrop(event: DragEvent) {
 					</div>
 				</div>
 
-				<div class="card">
-					<div class="card-header">
-						<div>
-							<p class="eyebrow">Taille</p>
-							<h3>Augmentez ou diminuez la taille du filigrane</h3>
-						</div>
-					</div>
-					<p class="card-subtext small">Redimensionnez en cliquant puis en tirant les coins du filigrane.</p>
-				</div>
-
 				<button class="download-btn" onclick={downloadImage}>
 					Télécharger l'image
 				</button>
@@ -991,8 +1158,27 @@ function handleDrop(event: DragEvent) {
 						<p class="eyebrow">Aperçu</p>
 						<h3>Ajustez votre filigrane</h3>
 					</div>
-					<div class="pill">Bougez le logo avec votre souris. Si le logo n'est pas dans le cadre rouge, il sera coupé</div>
+					<button class="help-toggle" onclick={() => isHelpExpanded = !isHelpExpanded}>
+						<span>Comment ça marche ?</span>
+						<span class="help-icon">{isHelpExpanded ? '−' : '+'}</span>
+					</button>
 				</div>
+				{#if isHelpExpanded}
+					<div class="help-panel">
+						<div class="help-item">
+							<strong>🖱️ Déplacer un logo</strong>
+							<p>Cliquez et glissez le logo avec votre souris. Si le logo n'est pas dans le cadre rouge, il sera coupé lors de l'export.</p>
+						</div>
+						<div class="help-item">
+							<strong>↔️ Redimensionner un logo</strong>
+							<p>Cliquez et tirez les coins du logo pour ajuster sa taille.</p>
+						</div>
+						<div class="help-item">
+							<strong>✅ Activer un logo</strong>
+							<p>Cliquez sur un logo ajouté (fond vert) dans la bibliothèque pour le sélectionner et le manipuler.</p>
+						</div>
+					</div>
+				{/if}
 				<div
 					class="canvas-drop-wrapper"
 					class:dragging={isDraggingFile}
@@ -1168,6 +1354,11 @@ function handleDrop(event: DragEvent) {
 		border-radius: 10px;
 	}
 
+	.watermark-preview-wrapper {
+		position: relative;
+		width: 100%;
+	}
+
 	.watermark-preview {
 		display: flex;
 		flex-direction: column;
@@ -1178,7 +1369,6 @@ function handleDrop(event: DragEvent) {
 		border: 3px solid #e5e7eb;
 		background: #f9fafb;
 		border-radius: 10px;
-		cursor: pointer;
 		transition: all 0.2s ease;
 		width: 100%;
 		box-sizing: border-box;
@@ -1186,41 +1376,114 @@ function handleDrop(event: DragEvent) {
 		position: relative;
 	}
 
-	.watermark-preview:hover {
+	.watermark-preview.added {
+		border-color: #10b981;
+		background: #f0fdf4;
+	}
+
+	.watermark-preview-wrapper:hover .watermark-preview {
+		border-color: #cbd5e1;
+		background: #f8fafc;
+	}
+
+	.watermark-preview-wrapper:hover .watermark-preview.added {
+		border-color: #059669;
+		background: #dcfce7;
+	}
+
+	.watermark-preview.custom-logo {
+		cursor: pointer;
+		border: 3px solid #10b981;
+		background: #f0fdf4;
+	}
+
+	.watermark-preview.custom-logo:hover {
+		border-color: #059669;
+		background: #dcfce7;
+	}
+
+	.watermark-preview.custom-logo.active {
 		border-color: #6366f1;
-		background: #f5f5ff;
+		background: #eef2ff;
+		box-shadow: 0 0 0 3px rgba(99, 102, 241, 0.25);
+	}
+
+	.watermark-preview.upload-card {
+		cursor: pointer;
+		border: 3px dashed #cbd5e1;
+		background: #f8fafc;
+	}
+
+	.watermark-preview.upload-card:hover {
+		border-color: #6366f1;
+		background: #eef2ff;
 		transform: translateY(-1px);
 		box-shadow: 0 3px 10px rgba(99, 102, 241, 0.15);
 	}
 
-	.watermark-preview.active {
-		border-color: #ef4444;
-		background: #fef2f2;
-		box-shadow: 0 0 0 4px rgba(239, 68, 68, 0.35), 0 6px 14px rgba(239, 68, 68, 0.25);
-		outline: 2px solid #ef4444;
+	.upload-icon-large {
+		font-size: 2.5rem;
+		opacity: 0.6;
 	}
 
-	.watermark-preview.active img,
-	.watermark-preview.active .watermark-text-preview {
-		border-color: #ef4444;
+	.upload-text {
+		text-align: center;
+		color: #6b7280;
+		font-weight: 600;
 	}
 
-	.watermark-preview.active:hover {
-		border-color: #ef4444;
-		background: #fee2e2;
+	.watermark-preview.upload-card:hover .upload-text {
+		color: #4f46e5;
 	}
 
-	.watermark-preview.active::after {
-		content: 'Sélectionné';
+	.active-badge {
 		position: absolute;
 		top: 6px;
-		right: 8px;
-		background: #ef4444;
+		left: 6px;
+		background: #6366f1;
 		color: white;
 		border-radius: 999px;
-		padding: 0.15rem 0.55rem;
+		padding: 0.15rem 0.5rem;
 		font-size: 0.65rem;
 		font-weight: 700;
+		z-index: 1;
+	}
+
+	.toggle-watermark-btn {
+		position: absolute;
+		top: 6px;
+		right: 6px;
+		width: 28px;
+		height: 28px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		background: #10b981;
+		color: white;
+		border: none;
+		border-radius: 6px;
+		cursor: pointer;
+		font-size: 1.3rem;
+		font-weight: bold;
+		transition: all 0.2s ease;
+		box-shadow: 0 2px 6px rgba(16, 185, 129, 0.3);
+		z-index: 2;
+	}
+
+	.toggle-watermark-btn:hover {
+		transform: scale(1.1);
+		box-shadow: 0 3px 10px rgba(16, 185, 129, 0.4);
+	}
+
+	.toggle-watermark-btn.is-added {
+		background: #ef4444;
+		box-shadow: 0 2px 6px rgba(239, 68, 68, 0.3);
+		font-size: 1.2rem;
+	}
+
+	.toggle-watermark-btn.is-added:hover {
+		background: #dc2626;
+		box-shadow: 0 3px 10px rgba(239, 68, 68, 0.4);
 	}
 
 	.watermark-preview img {
@@ -1260,10 +1523,6 @@ function handleDrop(event: DragEvent) {
 		font-weight: 700;
 		color: #111827;
 		text-align: center;
-	}
-
-	.watermark-preview.active .watermark-name {
-		color: #4f46e5;
 	}
 
 	.crop-options {
@@ -1362,14 +1621,59 @@ function handleDrop(event: DragEvent) {
 		color: #0f172a;
 	}
 
-	.pill {
+	.help-toggle {
+		display: flex;
+		align-items: center;
+		gap: 0.5rem;
 		background: #eef2ff;
 		color: #4f46e5;
 		border-radius: 999px;
-		padding: 0.35rem 0.65rem;
+		padding: 0.45rem 0.75rem;
 		font-weight: 700;
 		font-size: 0.8rem;
-		border: 1px solid #e0e7ff;
+		border: 2px solid #e0e7ff;
+		cursor: pointer;
+		transition: all 0.2s ease;
+	}
+
+	.help-toggle:hover {
+		background: #e0e7ff;
+		border-color: #c7d2fe;
+		transform: translateY(-1px);
+	}
+
+	.help-icon {
+		font-size: 1.1rem;
+		font-weight: bold;
+	}
+
+	.help-panel {
+		background: #fefce8;
+		border: 2px solid #fde047;
+		border-radius: 8px;
+		padding: 1rem;
+		margin-bottom: 0.5rem;
+		display: flex;
+		flex-direction: column;
+		gap: 0.75rem;
+	}
+
+	.help-item {
+		display: flex;
+		flex-direction: column;
+		gap: 0.25rem;
+	}
+
+	.help-item strong {
+		color: #854d0e;
+		font-size: 0.85rem;
+	}
+
+	.help-item p {
+		margin: 0;
+		color: #78716c;
+		font-size: 0.8rem;
+		line-height: 1.4;
 	}
 
 	canvas {
