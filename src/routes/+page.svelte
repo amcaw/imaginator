@@ -4,10 +4,8 @@ import { base } from '$app/paths';
 import { watermarks, type Watermark, type TextWatermark, type ImageWatermark } from '$lib/watermarks';
 import { cropRatios, getExportCrop } from '$lib/crops';
 
-const MIN_WATERMARK_SCALE = 0.1;
-const MAX_WATERMARK_SCALE = 2;
-const IMAGE_DEFAULT_WATERMARK_SCALE = 0.15;
-const TEXT_DEFAULT_WATERMARK_SCALE = 1;
+const MIN_WATERMARK_SCALE = 0.05;
+const MAX_WATERMARK_SCALE = 5;
 const HANDLE_SIZE = 14;
 
 type WatermarkInstance = {
@@ -191,11 +189,19 @@ function getDefaultWatermarkWidthPercent(watermark: Watermark) {
 		return 1;
 	}
 
-	if (isImageWatermark(watermark) && watermark.file.includes('decrypte')) {
-		return 0.08;
+	if (isParlons(watermark)) {
+		return 0.25;
 	}
 
-	return 0.20;
+	if (isImageWatermark(watermark) && watermark.file.includes('decrypte')) {
+		return 0.12;
+	}
+
+	if (isLive(watermark)) {
+		return 0.25;
+	}
+
+	return 0.26;
 }
 
 function getDefaultWatermarkX(
@@ -203,14 +209,9 @@ function getDefaultWatermarkX(
 	imageWidth: number,
 	cropX: number,
 	cropWidth: number,
+	cropHeight: number,
 	scaledWidth: number
 ) {
-	const paddingXPercent = 0.25;
-
-	if (watermark.type === 'none') {
-		return cropX + cropWidth - cropWidth * paddingXPercent;
-	}
-
 	if (watermark.type === 'text') {
 		return cropX + cropWidth * 0.75;
 	}
@@ -231,27 +232,27 @@ function getDefaultWatermarkX(
 		return imageWidth - scaledWidth / 2;
 	}
 
-	return cropX + cropWidth - cropWidth * paddingXPercent;
+	// Top-right logos: equal padding from right edge and top edge
+	// Use min(cropWidth, cropHeight) so padding is visually equal in both directions
+	const edgePadding = Math.min(cropWidth, cropHeight) * 0.06;
+	return cropX + cropWidth - scaledWidth / 2 - edgePadding;
 }
 
 function getDefaultWatermarkY(
 	watermark: Watermark,
 	cropY: number,
+	cropWidth: number,
 	cropHeight: number,
 	imageHeight: number,
 	scaledHeight: number
 ) {
-	const topPaddingPercent = 0.12;
-
-	if (watermark.type === 'none') {
-		return cropY + cropHeight * topPaddingPercent;
-	}
-
 	if (isFullWidthBanner(watermark)) {
 		return imageHeight - scaledHeight / 2;
 	}
 
-	return cropY + cropHeight * topPaddingPercent;
+	// Place close to top edge — same padding as X for equal spacing
+	const edgePadding = Math.min(cropWidth, cropHeight) * 0.06;
+	return cropY + scaledHeight / 2 + edgePadding;
 }
 
 function isImageWatermark(watermark: Watermark): watermark is ImageWatermark {
@@ -265,6 +266,11 @@ function isParlons(watermark: Watermark) {
 function isFullWidthBanner(watermark: Watermark) {
 	return isImageWatermark(watermark) &&
 		(watermark.file?.includes('opinion_bandeau') || watermark.file?.includes('enquete'));
+}
+
+function isLive(watermark: Watermark) {
+	return isImageWatermark(watermark) &&
+		(watermark.file?.includes('live_gauche') || watermark.file?.includes('live_centre') || watermark.file?.includes('live_droite'));
 }
 
 	function loadImageFromFile(file: File) {
@@ -293,17 +299,13 @@ function isFullWidthBanner(watermark: Watermark) {
 
 		const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(img);
 		const isBanner = isFullWidthBanner(instance.watermark);
-		const isParlonsSolution = isParlons(instance.watermark);
 
 		// Scale watermark relative to crop frame width for consistency
 		if (isBanner) {
 			instance.scale = img.width / instance.img.width;
-		} else if (isParlonsSolution) {
-			const targetScale = 0.2;
-			instance.scale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, targetScale));
 		} else {
-			const targetWatermarkWidthPercent = getDefaultWatermarkWidthPercent(instance.watermark);
-			instance.scale = (cropWidth * targetWatermarkWidthPercent) / instance.img.width;
+			const targetRatio = getDefaultWatermarkWidthPercent(instance.watermark);
+			instance.scale = (cropWidth * targetRatio) / instance.img.width;
 			instance.scale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, instance.scale));
 		}
 
@@ -315,11 +317,13 @@ function isFullWidthBanner(watermark: Watermark) {
 			img.width,
 			cropX,
 			cropWidth,
+			cropHeight,
 			scaledWidth
 		);
 		const targetY = getDefaultWatermarkY(
 			instance.watermark,
 			cropY,
+			cropWidth,
 			cropHeight,
 			img.height,
 			scaledHeight
@@ -452,12 +456,12 @@ function handleDrop(event: DragEvent) {
 				// Generate unique ID
 				const id = `custom-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-				// Calculate default position and scale
-				let x = 50, y = 50, scale = IMAGE_DEFAULT_WATERMARK_SCALE;
+				// Calculate default position and scale relative to crop width
+				let x = 50, y = 50, scale = 0.15;
 
 				if (uploadedImage) {
 					const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(uploadedImage);
-					const defaultScale = IMAGE_DEFAULT_WATERMARK_SCALE;
+					const defaultScale = (cropWidth * 0.15) / img.width;
 					scale = Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, defaultScale));
 
 					const scaledWidth = img.width * scale;
@@ -465,10 +469,11 @@ function handleDrop(event: DragEvent) {
 					const halfWidth = scaledWidth / 2;
 					const halfHeight = scaledHeight / 2;
 
-					const targetX = getDefaultWatermarkX(customWatermark, uploadedImage.width, cropX, cropWidth, scaledWidth);
+					const targetX = getDefaultWatermarkX(customWatermark, uploadedImage.width, cropX, cropWidth, cropHeight, scaledWidth);
 					const targetY = getDefaultWatermarkY(
 						customWatermark,
 						cropY,
+						cropWidth,
 						cropHeight,
 						uploadedImage.height,
 						scaledHeight
@@ -522,20 +527,16 @@ function handleDrop(event: DragEvent) {
 			// Generate unique ID
 			const id = `watermark-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
 
-			// Calculate default position and scale
-			let x = 50, y = 50, scale = IMAGE_DEFAULT_WATERMARK_SCALE;
+			// Calculate default position and scale relative to crop width
+			let x = 50, y = 50, scale = 0.15;
 
 			if (uploadedImage) {
 				const { cropWidth, cropHeight, cropX, cropY } = getExportCropFrame(uploadedImage);
 				const isBanner = isFullWidthBanner(watermark);
-				const isParlonsSolution = isParlons(watermark);
+				const targetRatio = getDefaultWatermarkWidthPercent(watermark);
 				const defaultScale = isBanner
 					? uploadedImage.width / img.width
-					: isParlonsSolution
-						? 0.2
-					: watermark.type === 'text'
-						? TEXT_DEFAULT_WATERMARK_SCALE
-						: IMAGE_DEFAULT_WATERMARK_SCALE;
+					: (cropWidth * targetRatio) / img.width;
 				scale = isBanner
 					? defaultScale
 					: Math.min(MAX_WATERMARK_SCALE, Math.max(MIN_WATERMARK_SCALE, defaultScale));
@@ -545,10 +546,11 @@ function handleDrop(event: DragEvent) {
 				const halfWidth = scaledWidth / 2;
 				const halfHeight = scaledHeight / 2;
 
-				const targetX = getDefaultWatermarkX(watermark, uploadedImage.width, cropX, cropWidth, scaledWidth);
+				const targetX = getDefaultWatermarkX(watermark, uploadedImage.width, cropX, cropWidth, cropHeight, scaledWidth);
 				const targetY = getDefaultWatermarkY(
 					watermark,
 					cropY,
+					cropWidth,
 					cropHeight,
 					uploadedImage.height,
 					scaledHeight
@@ -1044,7 +1046,12 @@ function handleDrop(event: DragEvent) {
 					<div class="watermark-grid">
 						{#each watermarks.filter(w => w.type !== 'none') as watermark}
 							{@const isAdded = watermarkInstances.some(i => isSameWatermark(i.watermark, watermark))}
-							<div class="watermark-preview-wrapper">
+							<button
+								class="watermark-preview-wrapper"
+								class:added={isAdded}
+								onclick={() => toggleWatermark(watermark)}
+								aria-label={isAdded ? `Retirer ${watermark.name}` : `Ajouter ${watermark.name}`}
+							>
 								<div
 									class="watermark-preview"
 									class:added={isAdded}
@@ -1056,15 +1063,13 @@ function handleDrop(event: DragEvent) {
 									{/if}
 									<span class="watermark-name">{watermark.name}</span>
 								</div>
-								<button
+								<span
 									class="toggle-watermark-btn"
 									class:is-added={isAdded}
-									onclick={() => toggleWatermark(watermark)}
-									aria-label={isAdded ? `Retirer ${watermark.name}` : `Ajouter ${watermark.name}`}
 								>
 									{isAdded ? '×' : '+'}
-								</button>
-							</div>
+								</span>
+							</button>
 						{/each}
 
 						{#each customLogos as customInstance}
@@ -1361,6 +1366,12 @@ function handleDrop(event: DragEvent) {
 	.watermark-preview-wrapper {
 		position: relative;
 		width: 100%;
+		cursor: pointer;
+		background: none;
+		border: none;
+		padding: 0;
+		font: inherit;
+		text-align: inherit;
 	}
 
 	.watermark-preview {
